@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "kel.news-reader",
+  "name": "MyRSS",
+  "version": "0.1.0",
+  "author": "Kelly",
+  "license": "MIT",
+  "description": "Your feeds, your reading space.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "MyRSS",
+    "description": "Your feeds, your reading space.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
