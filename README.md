@@ -20,6 +20,17 @@ isn't already available to use the OPML file pickers:
 omarchy pkg add zenity
 ```
 
+## Removal
+
+```sh
+omarchy plugin remove kel.news-reader
+```
+
+Subscriptions, saved articles, and reading history remain in
+`$XDG_STATE_HOME/omarchy/news-reader` (`~/.local/state/omarchy/news-reader` by
+default), so reinstalling can restore them. Removal does not uninstall Python
+or Zenity.
+
 ## Features
 
 - **Omarchy News** (`https://omarchy.org/news/rss.xml`) is included and fetched
