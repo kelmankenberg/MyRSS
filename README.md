@@ -108,7 +108,14 @@ displayed as plain text; feed downloads are capped at 2 MiB and thumbnails at
 512 KiB. At most 100 subscriptions, 100 cached stories per feed, and 10,000 saved
 stories are supported. Existing saved IDs are migrated to article snapshots
 on first load; stories that had already vanished from the old cache cannot
-be reconstructed. State writes are atomic; unreadable state is not overwritten.
+be reconstructed. A dedicated Python helper creates the state directory with
+owner-only permissions (`0700`) and state and temporary files with `0600`
+before writing any content, independently of the shell's umask. Writes are
+atomic and fsynced. Existing state permissions are repaired on load without
+changing its data. Symlinked directories/files, hard-linked files, and files
+not owned by the current user are rejected. Permission, read, and write failures
+are shown in the reader and disable further persistence; invalid state is never
+overwritten. Shared parent directories are not chmodded.
 
 ## Requirements and distribution
 

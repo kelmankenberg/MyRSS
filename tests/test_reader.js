@@ -44,10 +44,11 @@ const context = vm.createContext({
     root, Reader: reader,
     strings: {t: key => key, tn: key => key},
     Commons: {I18n: {formatNumber: String}},
-    Qt: {callLater: fn => tasks.push(fn)},
+    Qt: {callLater: fn => tasks.push(fn), resolvedUrl: file => "file:///plugin/" + file},
     feedProcess: {running: false}, articleProcess: {running: false},
     readTimer: {restart() {}, stop() {}},
-    stateFile: {setText: text => { persisted = JSON.parse(text); }},
+    stateLoader: {running: false},
+    stateWriter: {running: false},
     notificationProcess: {running: false},
     panel: {loadedContent: null},
     clipboard: {text: "", selectAll() {}, copy() { this.copied = this.text; }},
@@ -60,6 +61,8 @@ for (const match of qml.matchAll(/^  function (\w+)\(([^)]*)\) \{([\s\S]*?)^  \}
     root[match[1]] = (...args) => context[match[1]](...args);
 }
 root.clearInputFocus = () => {};
+const flushState = root.flushState;
+root.flushState = () => { persisted = JSON.parse(root.pendingState); root.pendingState = ""; };
 root.readState(JSON.stringify({feeds, savedIds: ["one"], readIds: ["two"]}));
 root.pendingFeedUrl = "";
 root.currentFeedUrl = feeds[0].url;
@@ -281,3 +284,15 @@ root.acceptPickedFile(127, "", "Picker unavailable");
 assert.equal(root.status, "status.pickerError");
 assert.equal(transfers.length, 2);
 console.log("Reader state migration, durable saves, search, and unread checks passed");
+root.pendingState = '{"feeds":[]}\n';
+root.stateWritable = true;
+flushState();
+assert.equal(root.writingState, '{"feeds":[]}\n');
+assert.equal(root.pendingState, "");
+root.pendingState = '{"feeds":[1]}\n';
+flushState();
+assert.equal(root.writingState, '{"feeds":[]}\n');
+root.acceptStateResult(1, '{"ok":false,"error":"Permission denied"}', false);
+assert.equal(root.stateWritable, false);
+assert.equal(root.pendingState, "");
+assert.equal(root.status, "status.saveError");

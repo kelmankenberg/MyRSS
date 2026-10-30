@@ -47,6 +47,8 @@ BarWidget {
   property var savedIds: []
   property var savedArticles: []
   property bool stateWritable: false
+  property string pendingState: ""
+  property string writingState: ""
   property var readIds: []
   property var refreshQueue: []
   property bool defaultFeedDisabled: false
@@ -213,7 +215,7 @@ BarWidget {
 
   function open() {
     root.opened = true
-    if (root.opened && !root.stateLoaded) stateFile.reload()
+    if (root.opened && !root.stateLoaded) root.loadState()
     else {
       root.refreshDefaultFeed()
       root.restoreArticle()
@@ -320,7 +322,7 @@ BarWidget {
       root.status = strings.t("status.readError")
       return
     }
-    stateFile.setText(JSON.stringify({
+    root.pendingState = JSON.stringify({
       schemaVersion: 2,
       feeds: root.feeds.slice(0, 100),
       folders: root.folderNames,
@@ -339,7 +341,38 @@ BarWidget {
         showImages: root.showImages, showRead: root.showRead, readerWidth: root.readerWidth
       },
       defaultFeedDisabled: root.defaultFeedDisabled
-    }, null, 2) + "\n")
+    }) + "\n"
+    root.flushState()
+  }
+
+  function loadState() {
+    if (stateLoader.running) return
+    stateLoader.command = ["python3", root.localPath("state.py"), "load", root.statePath]
+    stateLoader.running = true
+  }
+
+  function flushState() {
+    if (stateWriter.running || !root.pendingState || !root.stateWritable) return
+    root.writingState = root.pendingState
+    root.pendingState = ""
+    stateWriter.command = ["python3", root.localPath("state.py"), "save", root.statePath]
+    stateWriter.running = true
+  }
+
+  function acceptStateResult(code, output, loading) {
+    var result
+    try { result = JSON.parse(output) } catch (error) {
+      result = {ok: false, error: "Invalid persistence helper response"}
+    }
+    if (code !== 0 || !result.ok) {
+      root.stateWritable = false
+      root.pendingState = ""
+      root.status = strings.t(loading ? "status.readError" : "status.saveError")
+      console.warn("MyRSS: private state " + (loading ? "load" : "save") + " failed", result.error)
+      return
+    }
+    if (loading) root.readState(JSON.stringify(result.state))
+    else Qt.callLater(root.flushState)
   }
 
   function refreshDefaultFeed() {
@@ -922,23 +955,19 @@ BarWidget {
     if (root.pendingArticleScroll >= 0) restoreScrollTimer.restart()
   }
 
-  FileView {
-    id: stateFile
-    path: root.statePath
-    printErrors: false
-    atomicWrites: true
-    onLoaded: root.readState(text())
-    onLoadFailed: function(error) {
-      if (error === FileViewError.FileNotFound) root.readState("{}")
-      else {
-        root.status = strings.t("status.readError")
-        console.warn("MyRSS: could not load state", error)
-      }
-    }
-    onSaveFailed: function(error) {
-      root.status = strings.t("status.saveError")
-      console.warn("MyRSS: could not save state", error)
-    }
+  Process {
+    id: stateLoader
+    stdout: StdioCollector { id: stateLoadOutput }
+    onExited: function(code) { root.acceptStateResult(code, stateLoadOutput.text, true) }
+    Component.onCompleted: root.loadState()
+  }
+
+  Process {
+    id: stateWriter
+    stdinEnabled: true
+    onStarted: write(root.writingState)
+    stdout: StdioCollector { id: stateWriteOutput }
+    onExited: function(code) { root.acceptStateResult(code, stateWriteOutput.text, false) }
   }
 
   Timer {
