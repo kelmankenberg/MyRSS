@@ -5,6 +5,8 @@
 An Omarchy shell RSS/Atom reader with folders, saved articles, search, OPML
 import/export, and a slide-out reading view.
 
+![MyRSS showing subscriptions, unread counts, search, and stories with thumbnails](screenshots/myrss.png)
+
 ## Installation
 
 ```sh
