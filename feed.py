@@ -202,17 +202,35 @@ def parse_feed(data, source_url):
     return {"ok": True, "title": title[:200], "url": source_url, "items": items}
 
 
+class ArticleLimitError(ValueError):
+    pass
+
+
 class ArticleText(HTMLParser):
     EXCLUDED = {"script", "style", "noscript", "svg", "nav", "header", "footer", "aside", "form"}
     VOID = {"img", "br", "hr", "meta", "link", "input", "source", "wbr", "area", "embed"}
+    MAX_DEPTH = 128
+    MAX_NODES = 50000
+    MAX_CANDIDATES = 256
+    MAX_FRAGMENTS = 16384
+    MAX_RETAINED_TEXT = 1024 * 1024
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.stack = []
         self.candidates = []
         self.fallback = []
+        self.nodes = 0
+        self.fragments = 0
+        self.retained_text = 0
+
+    def limit_exceeded(self):
+        raise ArticleLimitError("Article HTML exceeds safe extraction limits. Open the original in your browser.")
 
     def handle_starttag(self, tag, attrs):
+        self.nodes += 1
+        if self.nodes > self.MAX_NODES or (tag not in self.VOID and len(self.stack) >= self.MAX_DEPTH):
+            self.limit_exceeded()
         attrs = dict(attrs)
         parent_skipped = bool(self.stack and self.stack[-1]["skipped"])
         skipped = parent_skipped or tag in self.EXCLUDED
@@ -222,6 +240,8 @@ class ArticleText(HTMLParser):
         ) else 0
         candidate = {"priority": priority, "parts": []} if priority and not skipped else None
         if candidate:
+            if len(self.candidates) >= self.MAX_CANDIDATES:
+                self.limit_exceeded()
             self.candidates.append(candidate)
         if not skipped and tag in PlainText.BLOCKS:
             self.append("\n")
@@ -242,11 +262,20 @@ class ArticleText(HTMLParser):
                 break
 
     def append(self, text):
-        for node in self.stack:
-            if node["candidate"]:
-                node["candidate"]["parts"].append(text)
+        if not text:
+            return
+        destinations = [node["candidate"]["parts"] for node in self.stack if node["candidate"]]
         if any(node["tag"] in {"p", "li", "h1", "h2", "h3", "blockquote", "pre"} for node in self.stack):
-            self.fallback.append(text)
+            destinations.append(self.fallback)
+        # Count duplicated references and characters across all candidate lists.
+        fragments = self.fragments + len(destinations)
+        retained_text = self.retained_text + len(text) * len(destinations)
+        if fragments > self.MAX_FRAGMENTS or retained_text > self.MAX_RETAINED_TEXT:
+            self.limit_exceeded()
+        self.fragments = fragments
+        self.retained_text = retained_text
+        for parts in destinations:
+            parts.append(text)
 
     def handle_data(self, text):
         if not self.stack or not self.stack[-1]["skipped"]:
@@ -396,6 +425,10 @@ def main(argv):
                 result = article(url)
             else:
                 result = image(url)
+        except ArticleLimitError:
+            print(json.dumps({"ok": False, "error":
+                "Article HTML exceeds safe extraction limits. Open the original in your browser."}))
+            return 1
         except (ValueError, OSError, urllib.error.URLError, TimeoutError, ET.ParseError):
             # Library/server exception messages can echo credentials or URLs.
             print(json.dumps({"ok": False, "error":

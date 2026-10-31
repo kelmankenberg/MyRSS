@@ -114,6 +114,56 @@ class FeedTests(unittest.TestCase):
         parser.feed("<body><div>Unrelated controls</div><p>Readable paragraph.</p></body>")
         self.assertEqual(parser.content(), "Readable paragraph.")
 
+    def test_nested_article_attack_is_rejected_under_memory_limit(self):
+        script = """
+import resource, sys
+resource.setrlimit(resource.RLIMIT_AS, (128 * 1024 * 1024, 128 * 1024 * 1024))
+sys.path.insert(0, sys.argv[1])
+from feed import ArticleText, ArticleLimitError
+parser = ArticleText()
+try:
+    parser.feed('<article>x' * 40000 + '</article>' * 40000)
+except ArticleLimitError:
+    assert len(parser.stack) <= parser.MAX_DEPTH
+    assert parser.fragments <= parser.MAX_FRAGMENTS
+    assert parser.retained_text <= parser.MAX_RETAINED_TEXT
+    print('bounded rejection')
+else:
+    raise AssertionError('Attack was not rejected')
+"""
+        result = subprocess.run(["python3", "-c", script, str(MODULE_PATH.parent)],
+                                text=True, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("bounded rejection", result.stdout)
+
+    def test_article_candidate_fragment_text_and_node_budgets(self):
+        cases = (
+            "<article>x</article>" * 257,
+            "<article>" + "<span>x</span>" * 17000 + "</article>",
+            "<article><article>" + "x" * (600 * 1024) + "</article></article>",
+            "<br>" * 50001,
+        )
+        for html in cases:
+            parser = feed.ArticleText()
+            with self.subTest(size=len(html)), self.assertRaises(feed.ArticleLimitError):
+                parser.feed(html)
+            self.assertLessEqual(len(parser.stack), parser.MAX_DEPTH)
+            self.assertLessEqual(len(parser.candidates), parser.MAX_CANDIDATES)
+            self.assertLessEqual(parser.fragments, parser.MAX_FRAGMENTS)
+            self.assertLessEqual(parser.retained_text, parser.MAX_RETAINED_TEXT)
+
+    def test_article_limit_failure_is_explicit_and_token_safe(self):
+        url = "https://example.com/private?token=secret"
+        output = io.StringIO()
+        with patch.object(feed.sys, "stdin", io.StringIO(json.dumps({"url": url}) + "\n")), \
+                patch.object(feed, "fetch", return_value=(b"<article>x" * 40000, url)), \
+                redirect_stdout(output):
+            self.assertEqual(feed.main(["feed.py", "article"]), 1)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["ok"])
+        self.assertIn("safe extraction limits", result["error"])
+        self.assertNotIn("secret", output.getvalue())
+
     def test_video_enclosure_does_not_hide_embedded_thumbnail(self):
         xml = b"""<rss xmlns:content="urn:content"><channel><item>
           <title>Story</title><link>https://example.com/story</link>

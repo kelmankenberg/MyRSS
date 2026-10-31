@@ -125,6 +125,13 @@ do not log request URLs. URLs still exist in the private state and process memor
 and are sent to the requested HTTPS server. Opening an article in an external
 browser hands its URL to that browser.
 
+Article extraction enforces parser-time limits: nesting depth 128, 50,000
+elements, 256 content candidates, 16,384 retained fragments, and 1 MiB of
+retained text counted across all candidate/fallback lists. These budgets bound
+memory before final text truncation, including duplicated nested-article
+fragments. Over-complex HTML is rejected with an explicit message directing
+the reader to open the original in a browser.
+
 ## Requirements and distribution
 
 Requires Omarchy's Quickshell/Qt 6 shell, Python 3, and Zenity for native OPML
