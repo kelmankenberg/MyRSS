@@ -381,26 +381,40 @@ def export_opml(state_path, destination):
 
 
 def main(argv):
+    if len(argv) == 2 and argv[1] in {"feed", "article", "image"}:
+        # URLs can contain bearer tokens; never accept them through argv.
+        try:
+            request = json.loads(sys.stdin.readline(16385))
+            url = request.get("url") if isinstance(request, dict) else None
+            if not isinstance(url, str) or len(url) > 2048:
+                raise ValueError("Invalid request")
+            url = safe_url(url)
+            if argv[1] == "feed":
+                data, final_url = fetch(url)
+                result = parse_feed(data, final_url)
+            elif argv[1] == "article":
+                result = article(url)
+            else:
+                result = image(url)
+        except (ValueError, OSError, urllib.error.URLError, TimeoutError, ET.ParseError):
+            # Library/server exception messages can echo credentials or URLs.
+            print(json.dumps({"ok": False, "error":
+                "The HTTPS request failed. Check the URL, access permissions, and connection."}))
+            return 1
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     if len(argv) == 4 and argv[1] == "export-opml":
         print(json.dumps(export_opml(argv[2], argv[3])))
         return
-    if len(argv) != 3 or argv[1] not in {"feed", "article", "image", "import-opml"}:
-        raise ValueError("Usage: feed.py feed|article|image HTTPS_URL, import-opml PATH, or export-opml STATE PATH")
-    if argv[1] == "feed":
-        data, url = fetch(argv[2])
-        result = parse_feed(data, url)
-    elif argv[1] == "article":
-        result = article(argv[2])
-    elif argv[1] == "image":
-        result = image(argv[2])
-    else:
-        result = import_opml(argv[2])
+    if len(argv) != 3 or argv[1] != "import-opml":
+        raise ValueError("Usage: feed.py feed|article|image (JSON on stdin), import-opml PATH, or export-opml STATE PATH")
+    result = import_opml(argv[2])
     print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":
     try:
-        main(sys.argv)
+        sys.exit(main(sys.argv))
     except (ValueError, OSError, urllib.error.URLError, TimeoutError, ET.ParseError) as error:
         print(json.dumps({"ok": False, "error": str(error)[:500]}, ensure_ascii=False))
         sys.exit(1)

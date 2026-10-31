@@ -18,12 +18,14 @@ Item {
     asynchronous: true
     cache: true
     onStatusChanged: {
-      if (status === Image.Error) console.warn("MyRSS: could not decode thumbnail", root.imageUrl)
+      if (status === Image.Error) console.warn("MyRSS: could not decode thumbnail")
     }
   }
 
   Process {
     id: imageProcess
+    stdinEnabled: true
+    onStarted: write(JSON.stringify({url: root.requestedUrl}) + "\n")
     stdout: StdioCollector { id: imageOutput }
     onExited: function(exitCode) {
       try {
@@ -33,10 +35,10 @@ Item {
         } else if (exitCode === 0 && result.ok && typeof result.path === "string") {
           root.localSource = "file://" + result.path
         } else {
-          console.warn("MyRSS: thumbnail download failed", root.imageUrl, result.error || exitCode)
+          console.warn("MyRSS: thumbnail download failed", result.error || exitCode)
         }
       } catch (error) {
-        console.warn("MyRSS: invalid thumbnail response", error)
+        console.warn("MyRSS: invalid thumbnail response")
       }
     }
   }
@@ -50,7 +52,7 @@ Item {
   function loadImage() {
     if (!/^https:\/\//i.test(root.imageUrl) || !root.helperPath || imageProcess.running) return
     root.requestedUrl = root.imageUrl
-    imageProcess.command = ["python3", root.helperPath, "image", root.imageUrl]
+    imageProcess.command = ["python3", root.helperPath, "image"]
     imageProcess.running = true
   }
 }

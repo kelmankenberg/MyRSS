@@ -2,6 +2,10 @@ import importlib.util
 import unittest
 import json
 import tempfile
+import io
+import subprocess
+from contextlib import redirect_stdout
+from unittest.mock import patch
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).parents[1] / "feed.py"
@@ -11,6 +15,61 @@ SPEC.loader.exec_module(feed)
 
 
 class FeedTests(unittest.TestCase):
+    def test_network_commands_receive_token_urls_only_via_stdin(self):
+        url = "https://example.com/private/path-secret?token=query-secret"
+        for operation in ("feed", "article", "image"):
+            output = io.StringIO()
+            with self.subTest(operation=operation), \
+                    patch.object(feed.sys, "stdin", io.StringIO(json.dumps({"url": url}) + "\n")), \
+                    patch.object(feed, "fetch", return_value=(b"<rss><channel/></rss>", url)) as fetch, \
+                    patch.object(feed, "article", return_value={"ok": True}) as article, \
+                    patch.object(feed, "image", return_value={"ok": True}) as image, \
+                    redirect_stdout(output):
+                self.assertEqual(feed.main(["feed.py", operation]), 0)
+                {"feed": fetch, "article": article, "image": image}[operation].assert_called_once_with(url)
+                self.assertTrue(json.loads(output.getvalue())["ok"])
+
+    def test_network_errors_do_not_echo_tokens(self):
+        url = "https://example.com/private/path-secret?token=query-secret"
+        for operation, function in (("feed", "fetch"), ("article", "article"), ("image", "image")):
+            output = io.StringIO()
+            with self.subTest(operation=operation), \
+                    patch.object(feed.sys, "stdin", io.StringIO(json.dumps({"url": url}) + "\n")), \
+                    patch.object(feed, function, side_effect=ValueError("Server echoed " + url)), \
+                    redirect_stdout(output):
+                self.assertEqual(feed.main(["feed.py", operation]), 1)
+                result = json.loads(output.getvalue())
+                self.assertFalse(result["ok"])
+                self.assertNotIn("secret", output.getvalue())
+
+    def test_real_helper_cmdline_has_no_url_and_rejects_argv_urls(self):
+        url = "https://localhost/path-secret?token=query-secret"
+        for operation in ("feed", "article", "image"):
+            with self.subTest(operation=operation), subprocess.Popen(
+                    ["python3", str(MODULE_PATH), operation], stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+                command = Path(f"/proc/{process.pid}/cmdline").read_bytes()
+                self.assertNotIn(b"secret", command)
+                self.assertNotIn(b"https://", command)
+                output, error = process.communicate(json.dumps({"url": url}) + "\n", timeout=5)
+                self.assertEqual(process.returncode, 1)
+                self.assertFalse(json.loads(output)["ok"])
+                self.assertNotIn("secret", output + error)
+            rejected = subprocess.run(["python3", str(MODULE_PATH), operation, url],
+                                      text=True, capture_output=True, timeout=5)
+            self.assertEqual(rejected.returncode, 1)
+            self.assertNotIn("secret", rejected.stdout + rejected.stderr)
+
+    def test_network_stdin_rejects_malformed_and_oversized_requests(self):
+        for request in ("invalid", "null", '{"url":123}', json.dumps({"url": "x" * 17000})):
+            output = io.StringIO()
+            with self.subTest(request=request[:30]), \
+                    patch.object(feed.sys, "stdin", io.StringIO(request + "\n")), \
+                    patch.object(feed, "fetch") as fetch, redirect_stdout(output):
+                self.assertEqual(feed.main(["feed.py", "feed"]), 1)
+                fetch.assert_not_called()
+                self.assertFalse(json.loads(output.getvalue())["ok"])
+
     def test_only_https_public_urls_are_accepted(self):
         for url in (
             "http://example.com/feed",

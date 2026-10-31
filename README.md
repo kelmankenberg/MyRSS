@@ -117,6 +117,14 @@ not owned by the current user are rejected. Permission, read, and write failures
 are shown in the reader and disable further persistence; invalid state is never
 overwritten. Shared parent directories are not chmodded.
 
+Feed, article, and thumbnail request URLs are sent to Python through stdin
+pipes, never command-line arguments or environment variables. This keeps private
+path/query access tokens out of process listings. Network failures use a fixed
+error message rather than echoing server/library exceptions; thumbnail diagnostics
+do not log request URLs. URLs still exist in the private state and process memory,
+and are sent to the requested HTTPS server. Opening an article in an external
+browser hands its URL to that browser.
+
 ## Requirements and distribution
 
 Requires Omarchy's Quickshell/Qt 6 shell, Python 3, and Zenity for native OPML

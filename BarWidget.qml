@@ -413,7 +413,7 @@ BarWidget {
     root.status = strings.t("status.loading")
     root.busy = true
     root.currentFeedUrl = url
-    feedProcess.command = ["python3", root.helperPath, "feed", url]
+    feedProcess.command = ["python3", root.helperPath, "feed"]
     feedProcess.running = true
   }
 
@@ -869,7 +869,7 @@ BarWidget {
   function requestArticle(url) {
     if (articleProcess.running) return
     root.articleRequestUrl = url
-    articleProcess.command = ["python3", root.helperPath, "article", url]
+    articleProcess.command = ["python3", root.helperPath, "article"]
     articleProcess.running = true
   }
 
@@ -1010,12 +1010,16 @@ BarWidget {
 
   Process {
     id: feedProcess
+    stdinEnabled: true
+    onStarted: write(JSON.stringify({url: root.currentFeedUrl}) + "\n")
     stdout: StdioCollector { id: feedOutput }
     onExited: function(exitCode) { root.acceptFeedResult(exitCode, feedOutput.text) }
   }
 
   Process {
     id: articleProcess
+    stdinEnabled: true
+    onStarted: write(JSON.stringify({url: root.articleRequestUrl}) + "\n")
     stdout: StdioCollector { id: articleOutput }
     onExited: function(exitCode) { root.acceptArticleResult(exitCode, articleOutput.text) }
   }
