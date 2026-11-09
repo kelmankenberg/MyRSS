@@ -44,6 +44,9 @@ or Zenity.
   still require a network connection. Unsave a story to remove its archive.
 - **All News** combines every feed. Its counter and each feed's counter show
   unread stories; Saved shows the total number of archived stories.
+- The bar icon highlights only for new unread articles received while MyRSS
+  is closed. Opening the reader clears the highlight without marking articles
+  read; it returns when more new articles arrive. This survives shell restarts.
 - Search looks through all feeds; unread stories are bold and marked with an
   accent border. Search also finds archived stories from removed feeds.
 - **Mark view read/unread** applies to the selected feed, folder, Saved list,

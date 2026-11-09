@@ -56,6 +56,12 @@ function unread(items, readIds) {
     return items.filter(function(item) { return readIds.indexOf(item.id) < 0; }).length;
 }
 
+function unseenIds(items, readIds, unseenArticleIds) {
+    return items.filter(function(item) {
+        return unseenArticleIds.indexOf(item.id) >= 0 && readIds.indexOf(item.id) < 0;
+    }).map(function(item) { return item.id; });
+}
+
 function markItems(readIds, items, read) {
     var ids = items.map(function(item) { return item.id; });
     return read ? Array.from(new Set(readIds.concat(ids))) : readIds.filter(function(id) { return ids.indexOf(id) < 0; });
@@ -85,6 +91,9 @@ function normalizeState(state) {
     var saved = unique(cleanItems(Array.isArray(state.savedArticles) ? state.savedArticles : [])
         .concat(allItems(feeds).filter(function(item) { return legacyIds.indexOf(item.id) >= 0; })));
     var prefs = state.preferences || {};
+    var readIds = (Array.isArray(state.readIds) ? state.readIds : []).filter(function(id) {
+        return typeof id === "string" && id.length <= 2048;
+    });
     var session = state.session || {};
     var active = typeof session.activeFeed === "string" ? session.activeFeed : "all";
     if (active !== "all" && active !== "saved"
@@ -97,9 +106,9 @@ function normalizeState(state) {
         folders: folderNames(feeds, state.folders),
         collapsedFolders: (Array.isArray(state.collapsedFolders) ? state.collapsedFolders : [])
             .filter(function(name) { return folderNames(feeds, state.folders).indexOf(name) >= 0; }),
-        readIds: (Array.isArray(state.readIds) ? state.readIds : []).filter(function(id) {
-            return typeof id === "string" && id.length <= 2048;
-        }),
+        readIds: readIds,
+        unseenArticleIds: unseenIds(allItems(feeds), readIds,
+            Array.isArray(state.unseenArticleIds) ? state.unseenArticleIds : []),
         defaultFeedDisabled: state.defaultFeedDisabled === true,
         session: {
             activeFeed: active,

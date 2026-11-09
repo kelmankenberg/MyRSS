@@ -7,6 +7,9 @@ Item {
     property var feeds: []
     property var saved: []
     property var readIds: []
+    property var unseenArticleIds: []
+    property bool opened: false
+    readonly property bool hasNewArticles: !opened && Reader.unseenIds(Reader.allItems(feeds), readIds, unseenArticleIds).length > 0
     property var collapsedFolders: []
     readonly property var sidebar: Reader.sidebar(feeds, ["Empty"], collapsedFolders)
     readonly property int unreadCount: Reader.unread(Reader.allItems(feeds), readIds)
@@ -23,6 +26,8 @@ Item {
             model.feeds = [{id: "feed", url: "https://example.com/feed", title: "Daily", items: [story("one"), story("two")]}]
             model.saved = []
             model.readIds = []
+            model.unseenArticleIds = []
+            model.opened = false
             model.collapsedFolders = []
         }
 
@@ -36,6 +41,25 @@ Item {
             compare(model.savedCount, 0)
             model.readIds = Reader.markItems(model.readIds, [story("one")], false)
             compare(model.unreadCount, 2)
+        }
+
+        function test_highlight_tracks_new_unread_items_not_total_unread() {
+            verify(!model.hasNewArticles)
+            model.unseenArticleIds = ["two"]
+            verify(model.hasNewArticles)
+            model.opened = true
+            verify(!model.hasNewArticles)
+            model.unseenArticleIds = []
+            model.opened = false
+            verify(!model.hasNewArticles)
+            compare(model.unreadCount, 2)
+            model.unseenArticleIds = ["one"]
+            verify(model.hasNewArticles)
+            model.readIds = ["one"]
+            verify(!model.hasNewArticles)
+            model.readIds = []
+            model.feeds = []
+            verify(!model.hasNewArticles)
         }
 
         function test_migration_and_feed_removal_preserve_saved_articles() {

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "kel.news-reader",
   "name": "MyRSS",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Kelly",
   "license": "MIT",
   "description": "Your feeds, your reading space.",

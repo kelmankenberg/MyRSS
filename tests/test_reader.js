@@ -31,13 +31,14 @@ assert.equal(reader.normalizeState(JSON.parse(JSON.stringify(folderState))).fold
 assert.equal(reader.normalizeState({preferences: {refreshMinutes: -1, markDelay: 100, textScale: 100}}).preferences.refreshMinutes, 0);
 
 const root = {
-    feeds: [], savedArticles: [], savedIds: [], readIds: [], refreshQueue: [],
+    feeds: [], savedArticles: [], savedIds: [], readIds: [], unseenArticleIds: [], refreshQueue: [],
     busy: false, stateWritable: true, opened: false, defaultFetchAttempted: true,
     batchRefresh: false, refreshFailures: 0, newArticleCount: 0, newArticleIds: [],
     pendingFeedUrl: "", currentFeedUrl: "", selectedId: "", articleOpen: false
 };
 const tasks = [];
 Object.defineProperty(root, "folderNames", {get: () => reader.folderNames(root.feeds, root.folders)});
+Object.defineProperty(root, "pendingArticleIds", {get: () => reader.unseenIds(root.allItems(), root.readIds, root.unseenArticleIds)});
 const warnings = [];
 let persisted;
 const context = vm.createContext({
@@ -88,6 +89,38 @@ assert.equal(root.feeds[0].title, "My custom name");
 assert.equal(root.feeds[0].id, feeds[0].id);
 assert.equal(root.feeds[0].folder, "Tech");
 assert.equal(root.feeds[0].error, "");
+assert.equal(persisted.unseenArticleIds.join(","), "new");
+// An unchanged refresh must not re-highlight articles already acknowledged.
+root.open();
+assert.equal(root.unseenArticleIds.length, 0);
+assert.equal(persisted.unseenArticleIds.length, 0);
+assert.ok(!root.readIds.includes("new"));
+root.close();
+root.acceptFeedResult(0, JSON.stringify({ok: true, url: feeds[0].url, title: "Daily", items: [story("new")]}));
+assert.equal(root.pendingArticleIds.length, 0);
+root.acceptFeedResult(0, JSON.stringify({ok: true, url: feeds[0].url, title: "Daily", items: [story("new"), story("newer")]}));
+assert.equal(root.pendingArticleIds.join(","), "newer");
+const highlightedState = JSON.stringify(persisted);
+root.readState(highlightedState);
+assert.equal(root.pendingArticleIds.join(","), "newer");
+root.markRead("newer", true);
+assert.equal(root.pendingArticleIds.length, 0);
+root.readState(highlightedState);
+root.pendingDeleteFeedId = feeds[0].id;
+root.removeFeed(feeds[0].id);
+assert.equal(root.pendingArticleIds.length, 0);
+// Loading while an initial open is awaiting state also acknowledges new items.
+root.opened = true;
+root.readState(highlightedState);
+assert.equal(persisted.unseenArticleIds.length, 0);
+root.acceptFeedResult(0, JSON.stringify({ok: true, url: feeds[0].url, title: "Daily", items: [story("latest")]}));
+assert.equal(root.pendingArticleIds.length, 0);
+root.close();
+assert.equal(root.pendingArticleIds.length, 0);
+assert.equal(reader.normalizeState({feeds, readIds: ["two"], unseenArticleIds: ["one", "two", "missing"]}).unseenArticleIds.join(","), "one");
+assert.equal(reader.normalizeState({feeds}).unseenArticleIds.length, 0);
+assert.match(qml, /foreground: root\.hasNewArticles \? Color\.accent : root\.foreground/);
+assert.match(qml, /useActiveColor: false/);
 root.busy = true;
 root.pendingFeedUrl = "";
 root.addFeed("https://example.com/another");

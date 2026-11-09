@@ -50,6 +50,7 @@ BarWidget {
   property string pendingState: ""
   property string writingState: ""
   property var readIds: []
+  property var unseenArticleIds: []
   property var refreshQueue: []
   property bool defaultFeedDisabled: false
   property bool defaultFetchAttempted: false
@@ -90,6 +91,8 @@ BarWidget {
   readonly property var selectedItem: findItem(selectedId)
   readonly property var visibleItems: buildVisibleItems()
   readonly property int unreadCount: allItems().filter(function(item) { return root.readIds.indexOf(item.id) < 0 }).length
+  readonly property var pendingArticleIds: Reader.unseenIds(allItems(), readIds, unseenArticleIds)
+  readonly property bool hasNewArticles: !opened && pendingArticleIds.length > 0
   readonly property int savedCount: savedArticles.length
   readonly property var scopedItems: Reader.scopeItems(feeds, savedArticles, activeFeed, searchText)
   readonly property var activeFeedData: feeds.find(function(feed) { return feed.id === root.activeFeed }) || null
@@ -215,8 +218,10 @@ BarWidget {
 
   function open() {
     root.opened = true
+    root.unseenArticleIds = []
     if (root.opened && !root.stateLoaded) root.loadState()
     else {
+      root.saveState()
       root.refreshDefaultFeed()
       root.restoreArticle()
     }
@@ -273,6 +278,7 @@ BarWidget {
       root.savedArticles = state.savedArticles
       root.savedIds = state.savedArticles.map(function(item) { return item.id })
       root.readIds = state.readIds
+      root.unseenArticleIds = root.opened ? [] : state.unseenArticleIds
       root.stateWritable = true
       root.refreshMinutes = state.preferences.refreshMinutes
       root.textScale = state.preferences.textScale
@@ -297,6 +303,7 @@ BarWidget {
       }]
       root.savedIds = []
       root.readIds = []
+      root.unseenArticleIds = []
       root.defaultFeedDisabled = false
       root.status = strings.t("status.readError")
       root.stateWritable = false
@@ -313,7 +320,7 @@ BarWidget {
       }
       root.restoringView = false
     })
-    if (root.stateWritable && state.schemaVersion !== 2) root.saveState()
+    if (root.stateWritable && (state.schemaVersion !== 2 || (root.opened && state.unseenArticleIds.length > 0))) root.saveState()
     if (root.opened) root.refreshDefaultFeed()
   }
 
@@ -335,6 +342,7 @@ BarWidget {
       savedIds: root.savedIds.slice(-10000),
       savedArticles: root.savedArticles,
       readIds: root.readIds,
+      unseenArticleIds: root.pendingArticleIds,
       preferences: {
         refreshMinutes: root.refreshMinutes, textScale: root.textScale,
         markDelay: root.markDelay, notifications: root.notificationsEnabled,
@@ -503,6 +511,8 @@ BarWidget {
     }
     if (!found) next.push({ id: id, title: result.title, url: result.url, items: Reader.cleanItems(result.items), folder: "", customTitle: false, lastUpdated: Date.now(), error: "" })
     root.feeds = next
+    root.unseenArticleIds = root.opened ? [] :
+        Reader.unseenIds(root.allItems(), root.readIds, root.unseenArticleIds.concat(incoming))
     if (root.pendingFeedUrl) {
       root.activeFeed = id
       root.settingsOpen = false
@@ -1036,8 +1046,8 @@ BarWidget {
     bar: root.bar
     slotSize: Style.bar.statusSlot
     text: "\uf09e"
-    foreground: Color.accent
-    activeColor: Color.accent
+    foreground: root.hasNewArticles ? Color.accent : root.foreground
+    useActiveColor: false
     tooltipText: strings.t("reader.title")
     active: root.opened
     onPressed: function(buttonCode) {
