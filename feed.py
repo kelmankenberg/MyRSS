@@ -6,6 +6,9 @@ import json
 import os
 import re
 import sys
+import struct
+import tempfile
+import binascii
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -313,6 +316,83 @@ def article(url):
     }
 
 
+def sanitize_png(data):
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("Invalid PNG thumbnail.")
+    output = bytearray(data[:8])
+    position = 8
+    seen = set()
+    idat_finished = False
+    color = depth = 0
+    palette_entries = 0
+    for _ in range(1024):
+        if position + 12 > len(data):
+            break
+        length = int.from_bytes(data[position:position + 4], "big")
+        end = position + 12 + length
+        if end > len(data):
+            break
+        kind = data[position + 4:position + 8]
+        payload = data[position + 8:end - 4]
+        if (not re.fullmatch(b"[A-Za-z]{4}", kind) or kind[2] & 32
+                or binascii.crc32(kind + payload) != int.from_bytes(data[end - 4:end], "big")):
+            break
+        if not seen and kind != b"IHDR":
+            break
+        if b"IDAT" in seen and kind != b"IDAT":
+            idat_finished = True
+        if kind == b"IHDR":
+            if seen or length != 13:
+                break
+            width, height, depth, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", payload)
+            depths = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}
+            if (not 0 < width <= 4096 or not 0 < height <= 4096 or width * height > 4_000_000
+                    or depth not in depths.get(color, ()) or compression or filtering or interlace not in (0, 1)):
+                break
+        elif kind == b"PLTE":
+            if (kind in seen or b"IDAT" in seen or b"tRNS" in seen or color in (0, 4)
+                    or not 0 < length <= 768 or length % 3
+                    or (color == 3 and length // 3 > 2 ** depth)):
+                break
+        elif kind == b"tRNS":
+            if kind in seen or b"IDAT" in seen:
+                break
+            if not ((color == 0 and length == 2) or (color == 2 and length == 6)
+                    or (color == 3 and b"PLTE" in seen and 0 < length <= palette_entries)):
+                break
+        elif kind == b"IDAT":
+            if idat_finished or (color == 3 and b"PLTE" not in seen):
+                break
+        elif kind == b"IEND":
+            if length or b"IDAT" not in seen or end != len(data):
+                break
+            output.extend(data[position:end])
+            return bytes(output)
+        elif not kind[0] & 32:
+            break
+        # Drop all other ancillary chunks without inflating text or profiles.
+        if kind in (b"IHDR", b"PLTE", b"tRNS", b"IDAT"):
+            output.extend(data[position:end])
+        if kind == b"PLTE":
+            palette_entries = length // 3
+        seen.add(kind)
+        position = end
+    raise ValueError("Invalid or oversized PNG thumbnail.")
+
+
+def sanitize_thumbnail(data, mime):
+    if len(data) > 512 * 1024:
+        raise ValueError("The thumbnail exceeded the 512 KiB limit.")
+    if mime == "image/png":
+        return sanitize_png(data), ".png"
+    if mime == "image/jpeg" and data.startswith(b"\xff\xd8\xff"):
+        return data, ".jpg"
+    if (mime == "image/webp" and len(data) >= 12 and data[:4] == b"RIFF"
+            and data[8:12] == b"WEBP" and int.from_bytes(data[4:8], "little") == len(data) - 8):
+        return data, ".webp"
+    raise ValueError("The thumbnail format does not match its content type.")
+
+
 def image(url):
     url = safe_url(url)
     validate_public_host(url)
@@ -326,20 +406,22 @@ def image(url):
         if mime not in extensions:
             raise ValueError("Only JPEG, PNG, and WebP thumbnails are supported.")
         data = response.read(512 * 1024 + 1)
-        if len(data) > 512 * 1024:
-            raise ValueError("The thumbnail exceeded the 512 KiB limit.")
+        data, extension = sanitize_thumbnail(data, mime)
     cache_root = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
-    cache_dir = os.path.join(cache_root, "omarchy", "news-reader", "images")
+    cache_dir = os.path.join(cache_root, "omarchy", "news-reader", "images-v2")
     os.makedirs(cache_dir, mode=0o700, exist_ok=True)
-    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
-    for extension in extensions.values():
-        cached_path = os.path.join(cache_dir, digest + extension)
-        if os.path.isfile(cached_path):
-            return {"ok": True, "path": cached_path}
-    name = digest + extensions[mime]
+    digest = hashlib.sha256(data).hexdigest()
+    name = digest + extension
     path = os.path.join(cache_dir, name)
-    with open(path, "wb") as output:
-        output.write(data)
+    temporary = ""
+    try:
+        with tempfile.NamedTemporaryFile(dir=cache_dir, prefix=".thumbnail-", delete=False) as output:
+            temporary = output.name
+            output.write(data)
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
     return {"ok": True, "path": path}
 
 

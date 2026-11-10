@@ -113,7 +113,13 @@ Feed and read state is kept in `$XDG_STATE_HOME/omarchy/news-reader/state.json`
 (`~/.local/state/omarchy/news-reader/state.json` by default), outside the
 plugin directory so saving data does not reload the widget. Network content is
 displayed as plain text; feed downloads are capped at 2 MiB and thumbnails at
-512 KiB. At most 100 subscriptions, 100 cached stories per feed, and 10,000 saved
+512 KiB. PNG thumbnails are structurally checked, limited to 4096 pixels per
+side and four megapixels, and stripped of metadata (including compressed text
+and color profiles) without decompressing it before the shell sees the image.
+Only image headers, palette/transparency, and pixel-data chunks are retained.
+Image signatures must match their MIME type. Sanitized images use a new cache
+namespace; legacy cached images are never reused.
+At most 100 subscriptions, 100 cached stories per feed, and 10,000 saved
 stories are supported. Existing saved IDs are migrated to article snapshots
 on first load; stories that had already vanished from the old cache cannot
 be reconstructed. A dedicated Python helper creates the state directory with

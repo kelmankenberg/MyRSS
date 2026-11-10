@@ -6,14 +6,28 @@ import io
 import http.client
 import urllib.request
 import subprocess
+import struct
+import zlib
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).parents[1] / "feed.py"
 SPEC = importlib.util.spec_from_file_location("feed", MODULE_PATH)
 feed = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(feed)
+
+
+def png_chunk(kind, payload=b""):
+    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload))
+
+
+def png_image(*metadata, width=1, height=1):
+    return (b"\x89PNG\r\n\x1a\n"
+            + png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + b"".join(metadata)
+            + png_chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00\xff"))
+            + png_chunk(b"IEND"))
 
 
 class TrackingBytesIO(io.BytesIO):
@@ -44,6 +58,85 @@ class TrackingSocket:
 
 
 class FeedTests(unittest.TestCase):
+    def test_png_metadata_is_removed_without_decompression(self):
+        compressed = zlib.compress(b"x" * 7000)
+        metadata = [png_chunk(b"zTXt", b"key\x00\x00" + compressed)] * 70
+        metadata += [
+            png_chunk(b"iCCP", b"profile\x00\x00" + compressed),
+            png_chunk(b"iTXt", b"key\x00\x01\x00\x00\x00" + compressed),
+            png_chunk(b"tEXt", b"key\x00text"),
+        ]
+        original = png_image(*metadata)
+        with patch.object(zlib, "decompress", side_effect=AssertionError("Metadata must not be decompressed")):
+            sanitized, extension = feed.sanitize_thumbnail(original, "image/png")
+        self.assertEqual(extension, ".png")
+        self.assertEqual(sanitized, png_image())
+        self.assertEqual(feed.sanitize_png(sanitized), sanitized)
+        after_pixels = png_image()[:-12] + b"".join(metadata) + png_chunk(b"IEND")
+        self.assertEqual(feed.sanitize_png(after_pixels), sanitized)
+
+    def test_png_palette_and_transparency_are_preserved(self):
+        image = (b"\x89PNG\r\n\x1a\n"
+                 + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 1, 3, 0, 0, 0))
+                 + png_chunk(b"PLTE", b"\xff\x00\x00")
+                 + png_chunk(b"tRNS", b"\x80")
+                 + png_chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+                 + png_chunk(b"IEND"))
+        self.assertEqual(feed.sanitize_png(image), image)
+
+    def test_png_malformed_structure_and_dimensions_are_rejected(self):
+        normal = png_image()
+        header = normal[8:33]
+        idat = png_chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00\xff"))
+        invalid = [
+            normal[:-1], normal + b"trailing",
+            normal[:20] + bytes([normal[20] ^ 1]) + normal[21:],
+            png_image(width=0), png_image(width=4097),
+            png_image(width=4096, height=4096),
+            png_image(png_chunk(b"ABCD")),
+            png_image(png_chunk(b"IHDR", b"\x00" * 13)),
+            b"\x89PNG\r\n\x1a\n" + header + png_chunk(b"IEND"),
+            b"\x89PNG\r\n\x1a\n" + header + idat + png_chunk(b"tEXt", b"k\x00v") + idat + png_chunk(b"IEND"),
+            png_image(*[png_chunk(b"tEXt", b"k\x00v")] * 1024),
+            png_image(png_chunk(b"tRNS", b"\x00")),
+        ]
+        for data in invalid:
+            with self.subTest(length=len(data)), self.assertRaises(ValueError):
+                feed.sanitize_png(data)
+
+    def test_mislabeled_png_cannot_bypass_sanitization(self):
+        for mime in ("image/jpeg", "image/webp"):
+            with self.subTest(mime=mime), self.assertRaises(ValueError):
+                feed.sanitize_thumbnail(png_image(), mime)
+        with self.assertRaises(ValueError):
+            feed.sanitize_thumbnail(b"\xff\xd8\xff" + b"x" * (512 * 1024), "image/jpeg")
+
+    def test_image_cache_never_returns_legacy_or_unsanitized_bytes(self):
+        url = "https://example.com/image.png"
+        original = png_image(png_chunk(b"zTXt", b"key\x00\x00" + zlib.compress(b"x" * 7000)))
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory) / "omarchy/news-reader/images"
+            legacy.mkdir(parents=True)
+            (legacy / (feed.hashlib.sha256(url.encode()).hexdigest() + ".png")).write_bytes(original)
+            sanitized_path = Path(directory) / "omarchy/news-reader/images-v2" / (
+                feed.hashlib.sha256(png_image()).hexdigest() + ".png"
+            )
+            sanitized_path.parent.mkdir()
+            sanitized_path.write_bytes(original)
+            response = io.BytesIO(original)
+            response.headers = {"Content-Type": "image/png"}
+            response.geturl = lambda: url
+            opener = Mock()
+            opener.open.return_value = response
+            with patch.dict(feed.os.environ, {"XDG_CACHE_HOME": directory}), \
+                    patch.object(feed, "validate_public_host"), \
+                    patch.object(feed.urllib.request, "build_opener", return_value=opener):
+                result = feed.image(url)
+            self.assertTrue(result["ok"])
+            self.assertEqual(Path(result["path"]), sanitized_path)
+            self.assertEqual(sanitized_path.read_bytes(), png_image())
+            self.assertEqual(list(sanitized_path.parent.glob(".thumbnail-*")), [])
+
     def test_https_redirects_close_unread_bodies_for_all_redirect_statuses(self):
         body = b"x" * (feed.MAX_RESPONSE + 1)
         frames = (
