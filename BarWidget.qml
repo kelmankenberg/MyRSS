@@ -120,7 +120,17 @@ BarWidget {
       else if (root.focusedControl === this) root.focusedControl = null
     }
     Component.onDestruction: if (activeFocus) root.settingsEditorFocused = false
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.MiddleButton
+      onPressed: function(mouse) {
+        mouse.accepted = true
+        root.showPasteUnavailable()
+      }
+    }
+    Keys.priority: Keys.BeforeItem
     Keys.onPressed: function(event) {
+      if (root.blockPaste(event)) return
       if (event.key === Qt.Key_Escape) { focus = false; event.accepted = true }
     }
   }
@@ -214,6 +224,17 @@ BarWidget {
     var url = String(Qt.resolvedUrl(file))
     if (url.indexOf("file://") === 0) url = url.substring(7)
     try { return decodeURIComponent(url) } catch (e) { return url }
+  }
+
+  function showPasteUnavailable() {
+    root.status = strings.t("status.pasteUnavailable")
+  }
+
+  function blockPaste(event) {
+    if (!event.matches(StandardKey.Paste)) return false
+    event.accepted = true
+    root.showPasteUnavailable()
+    return true
   }
 
   function open() {
@@ -1245,7 +1266,9 @@ BarWidget {
                   text: root.draftUrl
                   selectByMouse: true
                   onTextChanged: root.draftUrl = text
+                  Keys.priority: Keys.BeforeItem
                   Keys.onPressed: function(event) {
+                    if (root.blockPaste(event)) return
                     if (event.key === Qt.Key_Escape) {
                       root.addingFeed = false
                       feedUrlInput.focus = false
@@ -1450,7 +1473,9 @@ BarWidget {
               selectByMouse: true
               onTextChanged: root.searchText = text
               onTextEdited: root.settingsOpen = false
+              Keys.priority: Keys.BeforeItem
               Keys.onPressed: function(event) {
+                if (root.blockPaste(event)) return
                 if (event.key === Qt.Key_Escape) {
                   if (text) text = ""
                   else focus = false

@@ -43,6 +43,7 @@ const warnings = [];
 let persisted;
 const context = vm.createContext({
     root, Reader: reader,
+    StandardKey: {Paste: "paste"},
     strings: {t: key => key, tn: key => key},
     Commons: {I18n: {formatNumber: String}},
     Qt: {callLater: fn => tasks.push(fn), resolvedUrl: file => "file:///plugin/" + file},
@@ -121,6 +122,16 @@ assert.equal(reader.normalizeState({feeds, readIds: ["two"], unseenArticleIds: [
 assert.equal(reader.normalizeState({feeds}).unseenArticleIds.length, 0);
 assert.match(qml, /foreground: root\.hasNewArticles \? Color\.accent : root\.foreground/);
 assert.match(qml, /useActiveColor: false/);
+const pasteEvent = {accepted: false, matches: key => key === "paste"};
+assert.equal(root.blockPaste(pasteEvent), true);
+assert.equal(pasteEvent.accepted, true);
+assert.equal(root.status, "status.pasteUnavailable");
+const ordinaryKey = {accepted: false, matches: () => false};
+assert.equal(root.blockPaste(ordinaryKey), false);
+assert.equal(ordinaryKey.accepted, false);
+assert.equal((qml.match(/Keys\.priority: Keys\.BeforeItem/g) || []).length, 3);
+assert.equal((qml.match(/if \(root\.blockPaste\(event\)\) return/g) || []).length, 3);
+assert.match(qml, /component ReaderInput: TextInput \{[\s\S]*?acceptedButtons: Qt\.MiddleButton[\s\S]*?root\.showPasteUnavailable\(\)/);
 root.busy = true;
 root.pendingFeedUrl = "";
 root.addFeed("https://example.com/another");

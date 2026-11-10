@@ -20,6 +20,7 @@
   "settings.resetWidth": "Reset width",
   "settings.ungrouped": "No folder",
   "status.linkCopied": "Article link copied.",
+  "status.pasteUnavailable": "Pasting is disabled in MyRSS for safety. Type the text instead.",
   "list.noSearchResults": "No articles match your search.",
   "list.noUnread": "You're all caught up. Choose Show Read to see older stories.",
   "list.emptyFolder": "This folder is empty. Move feeds here using their right-click menu or Settings.",

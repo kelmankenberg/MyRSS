@@ -49,6 +49,8 @@ or Zenity.
   read; it returns when more new articles arrive. This survives shell restarts.
 - Search looks through all feeds; unread stories are bold and marked with an
   accent border. Search also finds archived stories from removed feeds.
+- Clipboard paste is disabled in text inputs to protect the shared shell from
+  unbounded clipboard transfers. Typing, selection, and copying remain available.
 - **Mark view read/unread** applies to the selected feed, folder, Saved list,
   or global search results, including stories hidden by the read filter.
   Settings has a separate **Mark ALL feeds read/unread** action.
