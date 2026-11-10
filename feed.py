@@ -489,7 +489,8 @@ def export_opml(state_path, destination):
         ET.SubElement(parent, "outline", type="rss", text=subscription["title"],
                       title=subscription["title"], xmlUrl=safe_url(subscription["url"]))
     data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-    with open(os.path.expanduser(destination), "xb") as output:
+    fd = os.open(os.path.expanduser(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as output:
         output.write(data)
     return {"ok": True, "path": os.path.expanduser(destination)}
 

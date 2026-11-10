@@ -1,6 +1,8 @@
 import importlib.util
 import unittest
 import json
+import os
+import stat
 import tempfile
 import io
 import http.client
@@ -367,8 +369,51 @@ else:
             state_path.write_text(json.dumps({"feeds": subscriptions}))
             feed.export_opml(state_path, destination)
             self.assertEqual(feed.parse_opml(destination.read_bytes()), subscriptions)
+            original_bytes = destination.read_bytes()
+            destination.chmod(0o640)
             with self.assertRaises(FileExistsError):
                 feed.export_opml(state_path, destination)
+            self.assertEqual(destination.read_bytes(), original_bytes)
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o640)
+            link = Path(directory) / "existing-link.opml"
+            link.symlink_to(destination)
+            with self.assertRaises(FileExistsError):
+                feed.export_opml(state_path, link)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(destination.read_bytes(), original_bytes)
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o640)
+
+    def test_opml_export_is_private_before_first_write_under_permissive_umasks(self):
+        subscriptions = [{
+            "title": "Private feed",
+            "url": "https://example.com/synthetic-path-token/feed?token=synthetic-query-token",
+            "folder": "",
+        }]
+        previous_umask = os.umask(0o022)
+        self.addCleanup(os.umask, previous_umask)
+        original_fdopen = os.fdopen
+        checked_descriptors = []
+
+        def private_fdopen(fd, *args, **kwargs):
+            info = os.fstat(fd)
+            self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+            self.assertEqual(info.st_size, 0)
+            checked_descriptors.append(fd)
+            return original_fdopen(fd, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory).chmod(0o755)
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(json.dumps({"feeds": subscriptions}))
+            for mask in (0o000, 0o022, 0o077):
+                with self.subTest(umask=oct(mask)):
+                    os.umask(mask)
+                    destination = Path(directory) / f"feeds-{mask}.opml"
+                    with patch.object(feed.os, "fdopen", side_effect=private_fdopen):
+                        feed.export_opml(state_path, destination)
+                    self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+                    self.assertEqual(feed.parse_opml(destination.read_bytes()), subscriptions)
+            self.assertEqual(len(checked_descriptors), 3)
 
 
 if __name__ == "__main__":

@@ -93,7 +93,8 @@ or Zenity.
   subscriptions and folders without removing existing feeds or fetching
   stories automatically. Press Refresh afterward. HTTP URLs are upgraded to
   HTTPS; an invalid/private URL rejects the import without partial changes.
-  Export creates a new file and refuses to overwrite an existing one.
+  Export creates a new file with owner-only permissions (`0600`) before writing
+  any subscription URLs and refuses to overwrite an existing one.
 - Press **Escape** to close the article or Settings, then close the reader.
 - Move the widget with `omarchy bar move kel.news-reader --section left`,
   `--section center`, or `--section right`.
