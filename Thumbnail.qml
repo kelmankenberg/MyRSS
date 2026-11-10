@@ -8,6 +8,7 @@ Item {
   property string helperPath: ""
   property string localSource: ""
   property string requestedUrl: ""
+  property bool requestTimedOut: false
   readonly property bool ready: thumbnail.status === Image.Ready
 
   Image {
@@ -28,6 +29,15 @@ Item {
     onStarted: write(JSON.stringify({url: root.requestedUrl}) + "\n")
     stdout: StdioCollector { id: imageOutput }
     onExited: function(exitCode) {
+      requestDeadline.stop()
+      killTimer.stop()
+      var timedOut = root.requestTimedOut
+      root.requestTimedOut = false
+      if (timedOut) {
+        console.warn("MyRSS: thumbnail request timed out")
+        if (root.requestedUrl !== root.imageUrl) root.loadImage()
+        return
+      }
       try {
         var result = JSON.parse(imageOutput.text || "{}")
         if (root.requestedUrl !== root.imageUrl) {
@@ -43,6 +53,18 @@ Item {
     }
   }
 
+  Timer {
+    id: requestDeadline
+    interval: 15000
+    onTriggered: root.expireImageRequest()
+  }
+
+  Timer {
+    id: killTimer
+    interval: 1000
+    onTriggered: root.forceKillImageRequest()
+  }
+
   onImageUrlChanged: {
     localSource = ""
     loadImage()
@@ -52,7 +74,20 @@ Item {
   function loadImage() {
     if (!/^https:\/\//i.test(root.imageUrl) || !root.helperPath || imageProcess.running) return
     root.requestedUrl = root.imageUrl
+    root.requestTimedOut = false
     imageProcess.command = ["python3", root.helperPath, "image"]
     imageProcess.running = true
+    requestDeadline.restart()
+  }
+
+  function expireImageRequest() {
+    if (!imageProcess.running) return
+    root.requestTimedOut = true
+    imageProcess.signal(15)
+    killTimer.restart()
+  }
+
+  function forceKillImageRequest() {
+    if (root.requestTimedOut && imageProcess.running) imageProcess.signal(9)
   }
 }

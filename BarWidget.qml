@@ -17,6 +17,8 @@ BarWidget {
   property bool settingsOpen: false
   property bool showRead: true
   property bool busy: false
+  property bool feedTimedOut: false
+  property bool articleTimedOut: false
   property bool addingFeed: false
   property bool addingFolder: false
   property string pendingDeleteFeedId: ""
@@ -441,9 +443,34 @@ BarWidget {
     }
     root.status = strings.t("status.loading")
     root.busy = true
+    root.feedTimedOut = false
     root.currentFeedUrl = url
     feedProcess.command = ["python3", root.helperPath, "feed"]
     feedProcess.running = true
+    feedDeadline.restart()
+  }
+
+  function expireFeedRequest() {
+    if (!feedProcess.running) return
+    root.feedTimedOut = true
+    feedProcess.signal(15)
+    feedKillTimer.restart()
+  }
+
+  function forceKillFeedRequest() {
+    if (root.feedTimedOut && feedProcess.running) feedProcess.signal(9)
+  }
+
+  function finishFeedProcess(exitCode, output) {
+    feedDeadline.stop()
+    feedKillTimer.stop()
+    if (root.feedTimedOut) {
+      root.feedTimedOut = false
+      root.busy = false
+      root.feedFailed(strings.t("status.requestTimeout"))
+      return
+    }
+    root.acceptFeedResult(exitCode, output)
   }
 
   function refreshAllFeeds(automatic) {
@@ -900,8 +927,35 @@ BarWidget {
   function requestArticle(url) {
     if (articleProcess.running) return
     root.articleRequestUrl = url
+    root.articleTimedOut = false
     articleProcess.command = ["python3", root.helperPath, "article"]
     articleProcess.running = true
+    articleDeadline.restart()
+  }
+
+  function expireArticleRequest() {
+    if (!articleProcess.running) return
+    root.articleTimedOut = true
+    articleProcess.signal(15)
+    articleKillTimer.restart()
+  }
+
+  function forceKillArticleRequest() {
+    if (root.articleTimedOut && articleProcess.running) articleProcess.signal(9)
+  }
+
+  function finishArticleProcess(exitCode, output) {
+    articleDeadline.stop()
+    articleKillTimer.stop()
+    var timedOut = root.articleTimedOut
+    root.articleTimedOut = false
+    if (timedOut) {
+      root.acceptArticleResult(1, JSON.stringify({
+        ok: false, error: strings.t("status.requestTimeout")
+      }))
+      return
+    }
+    root.acceptArticleResult(exitCode, output)
   }
 
   function closeArticle() {
@@ -1044,7 +1098,19 @@ BarWidget {
     stdinEnabled: true
     onStarted: write(JSON.stringify({url: root.currentFeedUrl}) + "\n")
     stdout: StdioCollector { id: feedOutput }
-    onExited: function(exitCode) { root.acceptFeedResult(exitCode, feedOutput.text) }
+    onExited: function(exitCode) { root.finishFeedProcess(exitCode, feedOutput.text) }
+  }
+
+  Timer {
+    id: feedDeadline
+    interval: 30000
+    onTriggered: root.expireFeedRequest()
+  }
+
+  Timer {
+    id: feedKillTimer
+    interval: 1000
+    onTriggered: root.forceKillFeedRequest()
   }
 
   Process {
@@ -1052,7 +1118,19 @@ BarWidget {
     stdinEnabled: true
     onStarted: write(JSON.stringify({url: root.articleRequestUrl}) + "\n")
     stdout: StdioCollector { id: articleOutput }
-    onExited: function(exitCode) { root.acceptArticleResult(exitCode, articleOutput.text) }
+    onExited: function(exitCode) { root.finishArticleProcess(exitCode, articleOutput.text) }
+  }
+
+  Timer {
+    id: articleDeadline
+    interval: 30000
+    onTriggered: root.expireArticleRequest()
+  }
+
+  Timer {
+    id: articleKillTimer
+    interval: 1000
+    onTriggered: root.forceKillArticleRequest()
   }
 
   Timer {

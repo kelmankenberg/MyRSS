@@ -59,6 +59,9 @@ or Zenity.
   for scheduled refreshes. Both automatic refresh and notifications default
   to **Off**. Enabled refresh runs even with the reader panel closed, while
   the Omarchy shell is running.
+- Feed and article requests have a 30-second total deadline; thumbnail requests
+  have a 15-second deadline. Timed-out helpers are terminated so a slow server
+  cannot hold a refresh or image request open indefinitely.
 - Reading uses the system font and live theme colors. Adjust article size
   with **A− / A+**, toggle images, and choose automatic read marking after
   2/5/10 seconds or turn it off. Defaults are 100%, images on, and five seconds.

@@ -37,6 +37,13 @@ const root = {
     pendingFeedUrl: "", currentFeedUrl: "", selectedId: "", articleOpen: false
 };
 const tasks = [];
+const timerCalls = {};
+const timer = name => ({
+    restart() { timerCalls[name + "Restart"] = (timerCalls[name + "Restart"] || 0) + 1; },
+    stop() { timerCalls[name + "Stop"] = (timerCalls[name + "Stop"] || 0) + 1; }
+});
+const feedSignals = [];
+const articleSignals = [];
 Object.defineProperty(root, "folderNames", {get: () => reader.folderNames(root.feeds, root.folders)});
 Object.defineProperty(root, "pendingArticleIds", {get: () => reader.unseenIds(root.allItems(), root.readIds, root.unseenArticleIds)});
 const warnings = [];
@@ -47,7 +54,10 @@ const context = vm.createContext({
     strings: {t: key => key, tn: key => key},
     Commons: {I18n: {formatNumber: String}},
     Qt: {callLater: fn => tasks.push(fn), resolvedUrl: file => "file:///plugin/" + file},
-    feedProcess: {running: false}, articleProcess: {running: false},
+    feedProcess: {running: false, signal: signal => feedSignals.push(signal)},
+    articleProcess: {running: false, signal: signal => articleSignals.push(signal)},
+    feedDeadline: timer("feedDeadline"), feedKillTimer: timer("feedKillTimer"),
+    articleDeadline: timer("articleDeadline"), articleKillTimer: timer("articleKillTimer"),
     readTimer: {restart() {}, stop() {}},
     stateLoader: {running: false},
     stateWriter: {running: false},
@@ -156,6 +166,26 @@ assert.match(qml, /onStarted: write\(JSON\.stringify\(\{url: root\.currentFeedUr
 assert.match(qml, /onStarted: write\(JSON\.stringify\(\{url: root\.articleRequestUrl\}\) \+ "\\n"\)/);
 assert.match(thumbnailQml, /imageProcess\.command = \["python3", root\.helperPath, "image"\]/);
 assert.match(thumbnailQml, /onStarted: write\(JSON\.stringify\(\{url: root\.requestedUrl\}\) \+ "\\n"\)/);
+assert.match(qml, /id: feedDeadline[\s\S]*?interval: 30000[\s\S]*?root\.expireFeedRequest\(\)/);
+assert.match(qml, /id: articleDeadline[\s\S]*?interval: 30000[\s\S]*?root\.expireArticleRequest\(\)/);
+assert.match(thumbnailQml, /id: requestDeadline[\s\S]*?interval: 15000[\s\S]*?root\.expireImageRequest\(\)/);
+const imageSignals = [];
+const thumbnailRoot = {requestTimedOut: false};
+const thumbnailContext = vm.createContext({
+    root: thumbnailRoot,
+    imageProcess: {running: true, signal: signal => imageSignals.push(signal)},
+    requestDeadline: timer("imageDeadline"),
+    killTimer: timer("imageKillTimer")
+});
+for (const match of thumbnailQml.matchAll(/^  function (\w+)\(([^)]*)\) \{([\s\S]*?)^  \}/gm)) {
+    vm.runInContext(`function ${match[1]}(${match[2]}) {${match[3]}}`, thumbnailContext);
+    thumbnailRoot[match[1]] = (...args) => thumbnailContext[match[1]](...args);
+}
+thumbnailRoot.expireImageRequest();
+assert.equal(thumbnailRoot.requestTimedOut, true);
+assert.equal(imageSignals.at(-1), 15);
+thumbnailRoot.forceKillImageRequest();
+assert.equal(imageSignals.at(-1), 9);
 assert.ok(!/console\.warn\([^\n]*root\.imageUrl/.test(thumbnailQml));
 root.busy = false;
 root.feeds = [{...feeds[0], folder: "Tech"}, {id: "other", url: "https://other.example/feed", title: "Other", items: [], folder: ""}];
@@ -355,3 +385,49 @@ root.acceptStateResult(1, '{"ok":false,"error":"Permission denied"}', false);
 assert.equal(root.stateWritable, false);
 assert.equal(root.pendingState, "");
 assert.equal(root.status, "status.saveError");
+
+root.stateWritable = true;
+root.currentFeedUrl = feeds[0].url;
+root.pendingFeedUrl = "https://example.com/new";
+root.feeds = [{...feeds[0], error: ""}];
+root.batchRefresh = true;
+root.refreshQueue = ["https://next.example/feed"];
+root.busy = true;
+context.feedProcess.running = true;
+root.expireFeedRequest();
+assert.equal(root.feedTimedOut, true);
+assert.equal(feedSignals.at(-1), 15);
+assert.ok(timerCalls.feedKillTimerRestart > 0);
+root.forceKillFeedRequest();
+assert.equal(feedSignals.at(-1), 9);
+context.feedProcess.running = false;
+const queuedTaskCount = tasks.length;
+root.finishFeedProcess(15, "");
+assert.equal(root.feedTimedOut, false);
+assert.equal(root.busy, false);
+assert.equal(root.pendingFeedUrl, "");
+assert.equal(root.feeds[0].error, "status.requestTimeout");
+assert.ok(timerCalls.feedDeadlineStop > 0);
+assert.equal(tasks.length, queuedTaskCount + 1);
+tasks.pop()();
+assert.equal(root.currentFeedUrl, "https://next.example/feed");
+assert.equal(root.busy, true);
+context.feedProcess.running = false;
+root.busy = false;
+root.batchRefresh = false;
+
+root.articleOpen = true;
+root.articleRequestUrl = story("slow").link;
+root.selectedUrl = root.articleRequestUrl;
+root.selectedFullContent = false;
+context.articleProcess.running = true;
+root.expireArticleRequest();
+assert.equal(root.articleTimedOut, true);
+assert.equal(articleSignals.at(-1), 15);
+root.forceKillArticleRequest();
+assert.equal(articleSignals.at(-1), 9);
+context.articleProcess.running = false;
+root.finishArticleProcess(15, "");
+assert.equal(root.articleTimedOut, false);
+assert.equal(root.articleError, "status.requestTimeout");
+assert.ok(timerCalls.articleDeadlineStop > 0);

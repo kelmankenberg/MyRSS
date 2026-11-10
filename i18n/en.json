@@ -97,6 +97,7 @@
   "status.loading": "Loading feed…",
   "status.busy": "A feed is updating. Please wait, then try again.",
   "status.feedError": "The feed could not be loaded.",
+  "status.requestTimeout": "The request timed out. Check the server and try again.",
   "status.refreshFailures": "%1 feeds could not be updated. Select a feed to see its error and retry.",
   "status.lastUpdated": "Updated: %1",
   "status.neverUpdated": "Not updated yet.",
