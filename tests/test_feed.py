@@ -3,6 +3,8 @@ import unittest
 import json
 import tempfile
 import io
+import http.client
+import urllib.request
 import subprocess
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -14,7 +16,71 @@ feed = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(feed)
 
 
+class TrackingBytesIO(io.BytesIO):
+    def __init__(self, value):
+        super().__init__(value)
+        self.tracking = False
+        self.body_bytes_read = 0
+
+    def read(self, size=-1):
+        value = super().read(size)
+        if self.tracking:
+            self.body_bytes_read += len(value)
+        return value
+
+    def readline(self, size=-1):
+        value = super().readline(size)
+        if self.tracking:
+            self.body_bytes_read += len(value)
+        return value
+
+
+class TrackingSocket:
+    def __init__(self, response_bytes):
+        self.stream = TrackingBytesIO(response_bytes)
+
+    def makefile(self, mode):
+        return self.stream
+
+
 class FeedTests(unittest.TestCase):
+    def test_https_redirects_close_unread_bodies_for_all_redirect_statuses(self):
+        body = b"x" * (feed.MAX_RESPONSE + 1)
+        frames = (
+            ("Content-Length", str(len(body)), body),
+            ("Transfer-Encoding", "chunked",
+             f"{len(body):X}\r\n".encode() + body + b"\r\n0\r\n\r\n"),
+            ("Connection", "close", body),
+        )
+        for code in (301, 302, 303, 307, 308):
+            for header, value, framed_body in frames:
+                with self.subTest(code=code, framing=header):
+                    response_bytes = (
+                        f"HTTP/1.1 {code} Redirect\r\n"
+                        f"Location: /next\r\n{header}: {value}\r\n\r\n"
+                    ).encode() + framed_body
+                    sock = TrackingSocket(response_bytes)
+                    response = http.client.HTTPResponse(sock)
+                    response.begin()
+                    sock.stream.tracking = True
+                    handler = feed.PublicHttpsRedirect()
+
+                    class Parent:
+                        def open(self, request, timeout=None):
+                            return request
+
+                    handler.parent = Parent()
+                    request = urllib.request.Request("https://example.com/start")
+                    request.timeout = 6
+                    with patch.object(feed, "validate_public_host"):
+                        redirected = handler.http_error_302(
+                            request, response, code, "Redirect", response.headers
+                        )
+
+                    self.assertEqual(redirected.full_url, "https://example.com/next")
+                    self.assertEqual(sock.stream.body_bytes_read, 0)
+                    self.assertTrue(response.isclosed())
+
     def test_network_commands_receive_token_urls_only_via_stdin(self):
         url = "https://example.com/private/path-secret?token=query-secret"
         for operation in ("feed", "article", "image"):

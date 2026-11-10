@@ -55,7 +55,10 @@ def validate_public_host(url):
 class PublicHttpsRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, new_url):
         validate_public_host(safe_url(new_url))
-        return super().redirect_request(request, response, code, message, headers, new_url)
+        redirected = super().redirect_request(request, response, code, message, headers, new_url)
+        if redirected is not None:
+            response.close()
+        return redirected
 
 
 def fetch(url):
