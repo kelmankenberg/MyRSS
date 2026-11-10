@@ -5,6 +5,8 @@
 An Omarchy shell RSS/Atom reader with folders, saved articles, search, OPML
 import/export, and a slide-out reading view.
 
+**[Changelog](CHANGELOG.md)**
+
 ![MyRSS showing subscriptions, unread counts, search, and stories with thumbnails](preview.png)
 
 ## Installation
@@ -47,8 +49,13 @@ or Zenity.
 - The bar icon highlights only for new unread articles received while MyRSS
   is closed. Opening the reader clears the highlight without marking articles
   read; it returns when more new articles arrive. This survives shell restarts.
+- Drag the divider beside the navigation panel to adjust its width from
+  140 to 240 pixels (following Omarchy's spacing scale). The width is remembered
+  between sessions.
 - Search looks through all feeds; unread stories are bold and marked with an
   accent border. Search also finds archived stories from removed feeds.
+- Scrolling down marks articles that have moved completely above the list as
+  read after a one-second pause. Partially visible articles remain unread.
 - Clipboard paste is disabled in text inputs to protect the shared shell from
   unbounded clipboard transfers. Typing, selection, and copying remain available.
 - **Mark view read/unread** applies to the selected feed, folder, Saved list,

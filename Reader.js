@@ -67,6 +67,15 @@ function markItems(readIds, items, read) {
     return read ? Array.from(new Set(readIds.concat(ids))) : readIds.filter(function(id) { return ids.indexOf(id) < 0; });
 }
 
+function scrolledPastItems(items, previousY, currentY, originY, itemHeight, spacing) {
+    if (currentY <= previousY) return [];
+    var stride = itemHeight + spacing;
+    return items.filter(function(item, index) {
+        var bottom = originY + index * stride + itemHeight;
+        return bottom > previousY && bottom <= currentY;
+    });
+}
+
 function savedAfterToggle(saved, item) {
     if (saved.some(function(story) { return story.id === item.id; }))
         return saved.filter(function(story) { return story.id !== item.id; });
@@ -120,6 +129,7 @@ function normalizeState(state) {
         },
         preferences: {
             readerWidth: Math.max(680, Math.min(1320, Number(prefs.readerWidth) || 860)),
+            navigationWidth: Math.round(Math.max(140, Math.min(240, Number(prefs.navigationWidth) || 180))),
             refreshMinutes: [0, 15, 30, 60].indexOf(prefs.refreshMinutes) >= 0 ? prefs.refreshMinutes : 0,
             textScale: [0.9, 1, 1.15, 1.3, 1.5].indexOf(prefs.textScale) >= 0 ? prefs.textScale : 1,
             markDelay: [0, 2, 5, 10].indexOf(prefs.markDelay) >= 0 ? prefs.markDelay : 5,

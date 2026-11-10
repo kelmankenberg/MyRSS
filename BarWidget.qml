@@ -41,6 +41,7 @@ BarWidget {
   property real contextX: 0
   property real contextY: 0
   property int readerWidth: 860
+  property int navigationWidth: 180
   property real storyScrollY: 0
   property real articleScrollY: 0
   property bool resumeArticle: false
@@ -310,6 +311,7 @@ BarWidget {
       root.showImages = state.preferences.showImages
       root.showRead = state.preferences.showRead
       root.readerWidth = state.preferences.readerWidth
+      root.navigationWidth = state.preferences.navigationWidth
       root.activeFeed = state.session.activeFeed
       root.searchText = state.session.searchText
       root.selectedId = state.session.selectedId
@@ -369,7 +371,8 @@ BarWidget {
       preferences: {
         refreshMinutes: root.refreshMinutes, textScale: root.textScale,
         markDelay: root.markDelay, notifications: root.notificationsEnabled,
-        showImages: root.showImages, showRead: root.showRead, readerWidth: root.readerWidth
+        showImages: root.showImages, showRead: root.showRead, readerWidth: root.readerWidth,
+        navigationWidth: root.navigationWidth
       },
       defaultFeedDisabled: root.defaultFeedDisabled
     }) + "\n"
@@ -1268,7 +1271,7 @@ BarWidget {
 
         Rectangle {
           id: feedColumn
-          width: Style.space(180)
+          width: Style.space(root.navigationWidth)
           height: parent.height
           color: "transparent"
           MouseArea {
@@ -1492,7 +1495,31 @@ BarWidget {
           }
         }
 
-        Rectangle { width: 1; height: parent.height; color: Color.popups.border }
+        Rectangle {
+          width: 1
+          height: parent.height
+          color: Color.popups.border
+          MouseArea {
+            anchors.centerIn: parent
+            width: Style.space(10)
+            height: parent.height
+            cursorShape: Qt.SizeHorCursor
+            enabled: root.stateLoaded
+            property real startX: 0
+            property int startWidth: 180
+            onPressed: function(mouse) {
+              startX = mapToGlobal(mouse.x, mouse.y).x
+              startWidth = root.navigationWidth
+            }
+            onPositionChanged: function(mouse) {
+              if (pressed)
+                root.navigationWidth = Math.round(Math.max(140, Math.min(240,
+                    startWidth + (mapToGlobal(mouse.x, mouse.y).x - startX) / Style.spacing.scale)))
+            }
+            onReleased: root.saveState()
+            onCanceled: root.saveState()
+          }
+        }
 
         Column {
           id: listColumn
@@ -1804,7 +1831,68 @@ BarWidget {
     Item {
       id: storiesView
       property bool restoring: true
+      property bool userScrolling: false
+      property real previousY: 0
+      property var pendingReadIds: []
       implicitHeight: 640
+      onVisibleChanged: if (!visible) cancelScrollRead()
+      function cancelScrollRead() {
+        scrollReadTimer.stop()
+        pendingReadIds = []
+        previousY = storyList.contentY
+      }
+      function recordScroll() {
+        var currentY = storyList.contentY
+        if (!restoring && !root.restoringView && root.stateLoaded && root.opened
+            && !root.articleOpen && (userScrolling || storyList.moving)) {
+          var passed = Reader.scrolledPastItems(root.visibleItems, previousY, currentY,
+              storyList.originY, Style.space(100), storyList.spacing)
+          pendingReadIds = Array.from(new Set(pendingReadIds.concat(
+              passed.map(function(item) { return item.id }))))
+          if (pendingReadIds.length) scrollReadTimer.restart()
+        }
+        previousY = currentY
+      }
+      function markScrolledRead() {
+        if (restoring || !root.opened || root.articleOpen || root.settingsOpen) {
+          cancelScrollRead()
+          return
+        }
+        if (storyList.moving) { scrollReadTimer.restart(); return }
+        var items = root.visibleItems
+        var stride = Style.space(100) + storyList.spacing
+        var top = storyList.contentY - storyList.originY
+        var passed = items.filter(function(item, index) {
+          return pendingReadIds.indexOf(item.id) >= 0
+              && index * stride + Style.space(100) <= top
+              && root.readIds.indexOf(item.id) < 0
+        })
+        pendingReadIds = []
+        if (!passed.length) return
+        var anchorIndex = Math.max(0, Math.min(items.length - 1, Math.floor((top + storyList.spacing) / stride)))
+        var anchorId = items[anchorIndex].id
+        var offset = top - anchorIndex * stride
+        restoring = true
+        root.readIds = Reader.markItems(root.readIds, passed, true)
+        Qt.callLater(function() {
+          if (!root.showRead) {
+            var index = root.visibleItems.findIndex(function(item) { return item.id === anchorId })
+            if (index >= 0) {
+              storyList.positionViewAtIndex(index, ListView.Beginning)
+              storyList.contentY = storyList.originY + index * stride + offset
+            }
+          }
+          restoring = false
+          previousY = storyList.contentY
+          root.storyScrollY = Math.max(0, storyList.contentY)
+          root.saveState()
+        })
+      }
+      Timer {
+        id: scrollReadTimer
+        interval: 1000
+        onTriggered: storiesView.markScrolledRead()
+      }
       function restoreScroll() {
         restoring = true
         storyList.contentY = Math.max(0, Math.min(root.storyScrollY, storyList.contentHeight - storyList.height))
@@ -1816,12 +1904,22 @@ BarWidget {
         clip: true
         model: root.visibleItems
         currentIndex: root.cursorIndex
-        onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
+        onCurrentIndexChanged: if (currentIndex >= 0 && !storiesView.restoring) positionViewAtIndex(currentIndex, ListView.Contain)
+        onModelChanged: storiesView.cancelScrollRead()
         spacing: Style.space(6)
-        onMovementEnded: { root.storyScrollY = contentY; root.saveState() }
-        onContentYChanged: if (root.stateLoaded && root.opened && !root.restoringView && !storiesView.restoring) {
-          root.storyScrollY = Math.max(0, contentY)
-          sessionSave.restart()
+        onMovementStarted: storiesView.userScrolling = true
+        onMovementEnded: {
+          storiesView.userScrolling = false
+          if (storiesView.pendingReadIds.length) scrollReadTimer.restart()
+          root.storyScrollY = contentY
+          root.saveState()
+        }
+        onContentYChanged: {
+          storiesView.recordScroll()
+          if (root.stateLoaded && root.opened && !root.restoringView && !storiesView.restoring) {
+            root.storyScrollY = Math.max(0, contentY)
+            sessionSave.restart()
+          }
         }
         Component.onCompleted: Qt.callLater(storiesView.restoreScroll)
         delegate: Rectangle {
@@ -1830,7 +1928,7 @@ BarWidget {
           height: Style.space(100)
           radius: Style.cornerRadius
           color: root.cursorId === modelData.id ? Style.hoverFill : "transparent"
-          border.width: root.readIds.indexOf(modelData.id) >= 0 ? 1 : 2
+          border.width: root.readIds.indexOf(modelData.id) >= 0 ? 0 : 2
           border.color: root.readIds.indexOf(modelData.id) >= 0 ? Color.popups.border : Color.accent
           Row {
             anchors.fill: parent

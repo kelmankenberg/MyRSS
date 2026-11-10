@@ -76,6 +76,32 @@ root.clearInputFocus = () => {};
 const flushState = root.flushState;
 root.flushState = () => { persisted = JSON.parse(root.pendingState); root.pendingState = ""; };
 root.readState(JSON.stringify({feeds, savedIds: ["one"], readIds: ["two"]}));
+assert.equal(root.navigationWidth, 180);
+root.navigationWidth = 210;
+root.saveState();
+assert.equal(persisted.preferences.navigationWidth, 210);
+root.navigationWidth = 180;
+root.readState(JSON.stringify(persisted));
+assert.equal(root.navigationWidth, 210);
+assert.equal(reader.normalizeState({preferences: {navigationWidth: 999}}).preferences.navigationWidth, 240);
+assert.equal(reader.normalizeState({preferences: {navigationWidth: 1}}).preferences.navigationWidth, 140);
+assert.equal(reader.normalizeState({preferences: {navigationWidth: "invalid"}}).preferences.navigationWidth, 180);
+const navigationDrag = qml.match(/startWidth = root\.navigationWidth[\s\S]*?onPositionChanged: function\(mouse\) \{([\s\S]*?)\n            \}/);
+assert.ok(navigationDrag);
+const resizeContext = vm.createContext({
+    root, pressed: true, startWidth: 180, startX: 100,
+    mapToGlobal: x => ({x}), Style: {spacing: {scale: 1}}
+});
+vm.runInContext(`function drag(mouse) {${navigationDrag[1]}}`, resizeContext);
+resizeContext.drag({x: 125, y: 0});
+assert.equal(root.navigationWidth, 205);
+resizeContext.drag({x: 200, y: 0});
+assert.equal(root.navigationWidth, 240);
+resizeContext.drag({x: 0, y: 0});
+assert.equal(root.navigationWidth, 140);
+resizeContext.Style.spacing.scale = 2;
+resizeContext.drag({x: 150, y: 0});
+assert.equal(root.navigationWidth, 205);
 root.pendingFeedUrl = "";
 root.currentFeedUrl = feeds[0].url;
 root.acceptFeedResult(0, JSON.stringify({ok: true, url: feeds[0].url, title: "Updated", items: [story("two")]}));
@@ -431,3 +457,69 @@ root.finishArticleProcess(15, "");
 assert.equal(root.articleTimedOut, false);
 assert.equal(root.articleError, "status.requestTimeout");
 assert.ok(timerCalls.articleDeadlineStop > 0);
+
+const scrollTasks = [];
+const scrollingRoot = {
+    readIds: [], opened: true, stateLoaded: true, articleOpen: false,
+    settingsOpen: false, restoringView: false, showRead: true, saves: 0,
+    saveState() { this.saves++; }
+};
+const scrollStories = [story("a"), story("b"), story("c"), story("d")];
+Object.defineProperty(scrollingRoot, "visibleItems", {
+    get: () => scrollStories.filter(item => scrollingRoot.showRead || !scrollingRoot.readIds.includes(item.id))
+});
+const list = {
+    contentY: 0, originY: 0, spacing: 6, moving: false,
+    positionViewAtIndex(index) { this.contentY = this.originY + index * 106; }
+};
+const scrollContext = vm.createContext({
+    root: scrollingRoot, Reader: reader, storyList: list, Style: {space: n => n},
+    restoring: false, userScrolling: true, previousY: 0, pendingReadIds: [],
+    scrollReadTimer: timer("scrollRead"),
+    Qt: {callLater: fn => scrollTasks.push(fn)}, ListView: {Beginning: 0}
+});
+const storiesSource = qml.slice(qml.indexOf("id: storiesView"), qml.indexOf("id: settingsPage"));
+for (const match of storiesSource.matchAll(/^      function (\w+)\(([^)]*)\) \{([\s\S]*?)^      \}/gm))
+    vm.runInContext(`function ${match[1]}(${match[2]}) {${match[3]}}`, scrollContext);
+assert.match(storiesSource, /id: scrollReadTimer\s+interval: 1000/);
+list.contentY = 99;
+scrollContext.recordScroll();
+assert.equal(scrollContext.pendingReadIds.length, 0);
+list.contentY = 150;
+scrollContext.recordScroll();
+assert.equal(scrollContext.pendingReadIds.join(","), "a");
+assert.equal(scrollingRoot.readIds.length, 0); // Pending until the pause expires.
+list.moving = true;
+scrollContext.markScrolledRead();
+assert.equal(scrollingRoot.readIds.length, 0);
+list.moving = false;
+scrollContext.markScrolledRead();
+scrollTasks.splice(0).forEach(fn => fn());
+assert.equal(scrollingRoot.readIds.join(","), "a");
+assert.equal(scrollingRoot.saves, 1);
+// Scrolling back up during the pause leaves the returned article unread.
+list.contentY = 230;
+scrollContext.recordScroll();
+list.contentY = 180;
+scrollContext.recordScroll();
+scrollContext.markScrolledRead();
+assert.equal(scrollingRoot.readIds.join(","), "a");
+// Restoring/jumping a list does not count as user scrolling.
+scrollContext.userScrolling = false;
+list.contentY = 330;
+scrollContext.recordScroll();
+assert.equal(scrollContext.pendingReadIds.length, 0);
+// Hide Read preserves the visible anchor and its intra-row offset.
+scrollingRoot.readIds = [];
+scrollingRoot.showRead = false;
+scrollContext.previousY = 0;
+scrollContext.userScrolling = true;
+list.contentY = 220;
+scrollContext.recordScroll();
+scrollContext.markScrolledRead();
+scrollTasks.splice(0).forEach(fn => fn());
+assert.equal(scrollingRoot.readIds.join(","), "a,b");
+assert.equal(list.contentY, 8);
+assert.equal(scrollingRoot.storyScrollY, 8);
+// A row entirely above an initial restored position is not newly passed.
+assert.equal(reader.scrolledPastItems(scrollStories, 220, 330, 0, 100, 6).map(item => item.id).join(","), "c");
