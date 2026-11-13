@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 import html
 import hashlib
+import fcntl
 import ipaddress
 import json
 import os
 import re
+import secrets
+import stat
 import sys
 import struct
-import tempfile
 import binascii
 import urllib.error
 import urllib.parse
@@ -19,6 +21,8 @@ from socket import getaddrinfo
 MAX_RESPONSE = 2 * 1024 * 1024
 MAX_ITEMS = 100
 MAX_TEXT = 12000
+MAX_CACHE_BYTES = 100 * 1024 * 1024
+MAX_CACHE_FILES = 2000
 
 
 def safe_url(value):
@@ -393,6 +397,58 @@ def sanitize_thumbnail(data, mime):
     raise ValueError("The thumbnail format does not match its content type.")
 
 
+def cache_thumbnail(data, extension):
+    cache_root = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
+    cache_dir = os.path.join(cache_root, "omarchy", "news-reader", "images-v2")
+    os.makedirs(cache_dir, mode=0o700, exist_ok=True)
+    name = hashlib.sha256(data).hexdigest() + extension
+    directory = os.open(cache_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        lock_fd = os.open(".cache.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        with os.fdopen(lock_fd, "rb") as lock:
+            info = os.fstat(lock.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                raise ValueError("Invalid thumbnail cache lock.")
+            # All temporary writes and eviction share this lock across helpers.
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            entries = []
+            with os.scandir(directory) as listing:
+                for entry in listing:
+                    cached = re.fullmatch(r"[a-f0-9]{64}\.(png|jpg|webp)", entry.name)
+                    temporary = re.fullmatch(r"\.thumbnail-(?:[a-f0-9]{32}|[a-z0-9_]{8})", entry.name)
+                    if not cached and not temporary:
+                        continue
+                    info = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                        raise ValueError("Invalid thumbnail cache entry.")
+                    if temporary or entry.name == name:
+                        os.unlink(entry.name, dir_fd=directory)
+                    else:
+                        entries.append((info.st_mtime_ns, entry.name, info.st_size))
+            if len(data) > MAX_CACHE_BYTES or MAX_CACHE_FILES < 1:
+                raise ValueError("The thumbnail exceeds the cache limit.")
+            total = sum(entry[2] for entry in entries)
+            entries.sort()
+            while total + len(data) > MAX_CACHE_BYTES or len(entries) + 1 > MAX_CACHE_FILES:
+                _, oldest, size = entries.pop(0)
+                os.unlink(oldest, dir_fd=directory)
+                total -= size
+            temporary = ".thumbnail-" + secrets.token_hex(16)
+            try:
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+                with os.fdopen(fd, "wb") as output:
+                    output.write(data)
+                os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+    finally:
+        os.close(directory)
+    return os.path.join(cache_dir, name)
+
+
 def image(url):
     url = safe_url(url)
     validate_public_host(url)
@@ -407,22 +463,7 @@ def image(url):
             raise ValueError("Only JPEG, PNG, and WebP thumbnails are supported.")
         data = response.read(512 * 1024 + 1)
         data, extension = sanitize_thumbnail(data, mime)
-    cache_root = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
-    cache_dir = os.path.join(cache_root, "omarchy", "news-reader", "images-v2")
-    os.makedirs(cache_dir, mode=0o700, exist_ok=True)
-    digest = hashlib.sha256(data).hexdigest()
-    name = digest + extension
-    path = os.path.join(cache_dir, name)
-    temporary = ""
-    try:
-        with tempfile.NamedTemporaryFile(dir=cache_dir, prefix=".thumbnail-", delete=False) as output:
-            temporary = output.name
-            output.write(data)
-        os.replace(temporary, path)
-    finally:
-        if temporary and os.path.exists(temporary):
-            os.unlink(temporary)
-    return {"ok": True, "path": path}
+    return {"ok": True, "path": cache_thumbnail(data, extension)}
 
 
 def parse_opml(data):
@@ -461,8 +502,14 @@ def parse_opml(data):
 
 
 def import_opml(path):
-    with open(os.path.expanduser(path), "rb") as source:
-        data = source.read(MAX_RESPONSE + 1)
+    fd = os.open(os.path.expanduser(path), os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Select a regular OPML file.")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            data = source.read(MAX_RESPONSE + 1)
+    finally:
+        os.close(fd)
     if len(data) > MAX_RESPONSE:
         raise ValueError("The OPML file exceeded the 2 MiB limit.")
     return {"ok": True, "feeds": parse_opml(data)}

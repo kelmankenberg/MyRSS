@@ -44,6 +44,7 @@ const timer = name => ({
 });
 const feedSignals = [];
 const articleSignals = [];
+const subscriptionSignals = [];
 Object.defineProperty(root, "folderNames", {get: () => reader.folderNames(root.feeds, root.folders)});
 Object.defineProperty(root, "pendingArticleIds", {get: () => reader.unseenIds(root.allItems(), root.readIds, root.unseenArticleIds)});
 const warnings = [];
@@ -56,8 +57,10 @@ const context = vm.createContext({
     Qt: {callLater: fn => tasks.push(fn), resolvedUrl: file => "file:///plugin/" + file},
     feedProcess: {running: false, signal: signal => feedSignals.push(signal)},
     articleProcess: {running: false, signal: signal => articleSignals.push(signal)},
+    subscriptionProcess: {running: false, signal: signal => subscriptionSignals.push(signal)},
     feedDeadline: timer("feedDeadline"), feedKillTimer: timer("feedKillTimer"),
     articleDeadline: timer("articleDeadline"), articleKillTimer: timer("articleKillTimer"),
+    subscriptionDeadline: timer("subscriptionDeadline"), subscriptionKillTimer: timer("subscriptionKillTimer"),
     readTimer: {restart() {}, stop() {}},
     stateLoader: {running: false},
     stateWriter: {running: false},
@@ -76,6 +79,7 @@ root.clearInputFocus = () => {};
 const flushState = root.flushState;
 root.flushState = () => { persisted = JSON.parse(root.pendingState); root.pendingState = ""; };
 root.readState(JSON.stringify({feeds, savedIds: ["one"], readIds: ["two"]}));
+assert.equal(root.compactView, false);
 assert.equal(root.navigationWidth, 180);
 root.navigationWidth = 210;
 root.saveState();
@@ -86,6 +90,17 @@ assert.equal(root.navigationWidth, 210);
 assert.equal(reader.normalizeState({preferences: {navigationWidth: 999}}).preferences.navigationWidth, 240);
 assert.equal(reader.normalizeState({preferences: {navigationWidth: 1}}).preferences.navigationWidth, 140);
 assert.equal(reader.normalizeState({preferences: {navigationWidth: "invalid"}}).preferences.navigationWidth, 180);
+root.compactView = true;
+root.saveState();
+const compactState = JSON.stringify(persisted);
+assert.equal(persisted.preferences.compactView, true);
+root.compactView = false;
+root.readState(compactState);
+assert.equal(root.compactView, true);
+assert.equal(root.showImages, true); // Compact lists do not change the article image preference.
+root.compactView = false;
+root.saveState();
+assert.equal(persisted.preferences.compactView, false);
 const navigationDrag = qml.match(/startWidth = root\.navigationWidth[\s\S]*?onPositionChanged: function\(mouse\) \{([\s\S]*?)\n            \}/);
 assert.ok(navigationDrag);
 const resizeContext = vm.createContext({
@@ -325,6 +340,38 @@ root.contextKind = "folder";
 root.contextTarget = "Empty";
 root.contextAction("refresh");
 assert.equal(root.status, "list.emptyFolder");
+let clearedSettingsFocus = false;
+root.clearInputFocus = () => { clearedSettingsFocus = true; };
+root.selectSettingsTab("updates");
+assert.equal(root.settingsTab, "updates");
+assert.equal(clearedSettingsFocus, true);
+root.clearInputFocus = () => {};
+let settingsRoute = "";
+context.panel.loadedContent = {
+    focusFeedEditor() { settingsRoute = "feed"; },
+    revealFolderDelete() { settingsRoute = "folder"; }
+};
+root.contextKind = "feed";
+root.contextTarget = root.feeds[0];
+root.contextAction("moveFeed");
+assert.equal(root.settingsOpen, true);
+assert.equal(root.settingsTab, "subscriptions");
+assert.equal(root.subscriptionsSection, "feeds");
+assert.equal(root.editingFeedId, root.feeds[0].id);
+tasks.pop()();
+assert.equal(settingsRoute, "feed");
+root.settingsTab = "help";
+root.contextKind = "folder";
+root.contextTarget = "Reading";
+root.contextAction("deleteFolder");
+assert.equal(root.settingsTab, "subscriptions");
+assert.equal(root.subscriptionsSection, "folders");
+assert.equal(root.pendingDeleteFolder, "Reading");
+tasks.pop()();
+assert.equal(settingsRoute, "folder");
+context.panel.loadedContent = null;
+root.pendingDeleteFolder = "";
+root.settingsOpen = false;
 root.changeReaderWidth(-10000);
 assert.equal(persisted.preferences.readerWidth, 680);
 root.changeReaderWidth(10000);
@@ -381,6 +428,54 @@ assert.equal(root.emptyMessage(), "list.failedFeed");
 root.searchText = "not found";
 assert.equal(root.emptyMessage(), "list.noSearchResults");
 root.open = () => { root.opened = true; };
+root.busy = false;
+root.transferBusy = false;
+root.transferSubscriptions(true, "/tmp/import.opml");
+assert.equal(root.transferBusy, true);
+assert.equal(context.subscriptionProcess.command[2], "import-opml");
+assert.equal(timerCalls.subscriptionDeadlineRestart, 1);
+root.expireSubscriptionTransfer();
+assert.equal(root.transferTimedOut, true);
+assert.equal(root.status, "status.transferTimeout");
+assert.equal(root.transferBusy, true);
+assert.equal(subscriptionSignals.at(-1), 15);
+assert.equal(timerCalls.subscriptionKillTimerRestart, 1);
+const activeTransferCommand = context.subscriptionProcess.command;
+root.transferSubscriptions(false, "/tmp/blocked.opml");
+assert.equal(context.subscriptionProcess.command, activeTransferCommand);
+root.forceKillSubscriptionTransfer();
+assert.equal(subscriptionSignals.at(-1), 9);
+const feedsBeforeTimeout = root.feeds;
+context.subscriptionProcess.running = false;
+root.finishSubscriptionProcess(0, JSON.stringify({
+    ok: true, feeds: [{title: "Too late", url: "https://late.example/feed", folder: ""}]
+}));
+assert.equal(root.feeds, feedsBeforeTimeout);
+assert.equal(root.transferBusy, false);
+assert.equal(root.transferTimedOut, false);
+assert.equal(root.status, "status.transferTimeout");
+assert.equal(root.exportSnapshot, "");
+assert.equal(timerCalls.subscriptionDeadlineStop, 1);
+assert.equal(timerCalls.subscriptionKillTimerStop, 1);
+root.transferSubscriptions(false, "/tmp/recovered.opml");
+assert.equal(root.transferBusy, true);
+assert.ok(root.exportSnapshot.endsWith("\n"));
+context.subscriptionProcess.running = false;
+root.finishSubscriptionProcess(0, JSON.stringify({ok: true, path: "/tmp/recovered.opml"}));
+root.checkSubscriptionStopped();
+assert.equal(root.transferBusy, false);
+assert.equal(root.status, "status.exported");
+assert.equal(root.exportSnapshot, "");
+root.transferSubscriptions(true, "/tmp/start-failed.opml");
+context.subscriptionProcess.running = false;
+root.checkSubscriptionStopped();
+assert.equal(root.transferBusy, false);
+assert.equal(root.status, "status.transferError");
+root.transferSubscriptions(true, "/tmp/missed-start-failure.opml");
+context.subscriptionProcess.running = false;
+root.expireSubscriptionTransfer();
+assert.equal(root.transferBusy, false);
+assert.equal(root.status, "status.transferError");
 const transfers = [];
 root.transferSubscriptions = (...args) => transfers.push(args);
 root.pickingImport = true;
@@ -389,6 +484,8 @@ assert.equal(transfers[0][0], true);
 assert.equal(transfers[0][1], "/tmp/My feeds.opml");
 assert.equal(root.opened, true);
 assert.equal(root.settingsOpen, true);
+assert.equal(root.settingsTab, "subscriptions");
+assert.equal(root.subscriptionsSection, "transfer");
 root.acceptPickedFile(1, "", "");
 assert.equal(transfers.length, 1);
 root.pickingImport = false;
@@ -471,7 +568,7 @@ assert.equal(warnings.length, warningCount + 1);
 const scrollTasks = [];
 const scrollingRoot = {
     readIds: [], opened: true, stateLoaded: true, articleOpen: false,
-    settingsOpen: false, restoringView: false, showRead: true, saves: 0,
+    settingsOpen: false, restoringView: false, showRead: true, saves: 0, storyRowHeight: 100,
     saveState() { this.saves++; }
 };
 const scrollStories = [story("a"), story("b"), story("c"), story("d")];
@@ -480,7 +577,7 @@ Object.defineProperty(scrollingRoot, "visibleItems", {
 });
 const list = {
     contentY: 0, originY: 0, spacing: 6, moving: false,
-    positionViewAtIndex(index) { this.contentY = this.originY + index * 106; }
+    positionViewAtIndex(index) { this.contentY = this.originY + index * (scrollingRoot.storyRowHeight + this.spacing); }
 };
 const scrollContext = vm.createContext({
     root: scrollingRoot, Reader: reader, storyList: list, Style: {space: n => n},
@@ -533,3 +630,24 @@ assert.equal(list.contentY, 8);
 assert.equal(scrollingRoot.storyScrollY, 8);
 // A row entirely above an initial restored position is not newly passed.
 assert.equal(reader.scrolledPastItems(scrollStories, 220, 330, 0, 100, 6).map(item => item.id).join(","), "c");
+// Compact rows use their own boundaries and preserve the anchor in unread-only mode.
+scrollingRoot.storyRowHeight = 48;
+scrollingRoot.readIds = [];
+scrollContext.previousY = 0;
+list.contentY = 47;
+scrollContext.recordScroll();
+assert.equal(scrollContext.pendingReadIds.length, 0);
+list.contentY = 58;
+scrollContext.recordScroll();
+assert.equal(scrollContext.pendingReadIds.join(","), "a");
+list.contentY = 46;
+scrollContext.recordScroll();
+scrollContext.markScrolledRead();
+assert.equal(scrollingRoot.readIds.length, 0);
+list.contentY = 112;
+scrollContext.recordScroll();
+scrollContext.markScrolledRead();
+scrollTasks.splice(0).forEach(fn => fn());
+assert.equal(scrollingRoot.readIds.join(","), "a,b");
+assert.equal(list.contentY, 4);
+assert.equal(scrollingRoot.storyScrollY, 4);

@@ -11,10 +11,23 @@ BarWidget {
 
   moduleName: "kel.news-reader"
   Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+  FileView {
+    path: Qt.resolvedUrl("manifest.json")
+    blockLoading: true
+    watchChanges: true
+    onFileChanged: reload()
+    onLoadFailed: console.warn("MyRSS: could not load plugin version")
+    JsonAdapter {
+      id: pluginManifest
+      property string version: ""
+    }
+  }
   property bool opened: false
   property bool stateLoaded: false
   property bool articleOpen: false
   property bool settingsOpen: false
+  property string settingsTab: "reading"
+  property string subscriptionsSection: ""
   property bool showRead: true
   property bool busy: false
   property bool feedTimedOut: false
@@ -63,6 +76,7 @@ BarWidget {
   property int markDelay: 5
   property bool notificationsEnabled: false
   property bool showImages: true
+  property bool compactView: false
   property bool settingsEditorFocused: false
   property bool selectedFullContent: false
   property string currentFeedUrl: ""
@@ -77,6 +91,7 @@ BarWidget {
   property bool pickingImport: false
   property bool pickerBusy: false
   property bool transferBusy: false
+  property bool transferTimedOut: false
   property string cursorId: ""
   property int cursorPosition: 0
   property var selectedSnapshot: null
@@ -91,6 +106,7 @@ BarWidget {
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color popupText: Color.popups.text
   readonly property color muted: Color.muted
+  readonly property real storyRowHeight: Style.space(root.compactView ? 48 : 100)
   readonly property var selectedItem: findItem(selectedId)
   readonly property var visibleItems: buildVisibleItems()
   readonly property int unreadCount: allItems().filter(function(item) { return root.readIds.indexOf(item.id) < 0 }).length
@@ -190,6 +206,28 @@ BarWidget {
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onClicked: { action.forceActiveFocus(); action.clicked() }
+    }
+  }
+
+  component SettingRow: Item {
+    id: settingRow
+    property string label: ""
+    default property alias controls: options.data
+    implicitHeight: Math.max(settingLabel.implicitHeight, options.implicitHeight)
+    ReaderText {
+      id: settingLabel
+      width: parent.width * 0.48
+      anchors.verticalCenter: parent.verticalCenter
+      text: settingRow.label
+      color: root.popupText
+      wrapMode: Text.Wrap
+    }
+    Flow {
+      id: options
+      x: parent.width * 0.52
+      width: parent.width * 0.48
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(4)
     }
   }
 
@@ -316,6 +354,7 @@ BarWidget {
       root.markDelay = state.preferences.markDelay
       root.notificationsEnabled = state.preferences.notifications
       root.showImages = state.preferences.showImages
+      root.compactView = state.preferences.compactView
       root.showRead = state.preferences.showRead
       root.readerWidth = state.preferences.readerWidth
       root.navigationWidth = state.preferences.navigationWidth
@@ -379,7 +418,7 @@ BarWidget {
         refreshMinutes: root.refreshMinutes, textScale: root.textScale,
         markDelay: root.markDelay, notifications: root.notificationsEnabled,
         showImages: root.showImages, showRead: root.showRead, readerWidth: root.readerWidth,
-        navigationWidth: root.navigationWidth
+        navigationWidth: root.navigationWidth, compactView: root.compactView
       },
       defaultFeedDisabled: root.defaultFeedDisabled
     }) + "\n"
@@ -627,7 +666,14 @@ BarWidget {
     root.editingFeedId = feed.id
     root.editingTitle = feed.title
     root.editingFolder = feed.folder || ""
+    root.settingsTab = "subscriptions"
+    root.subscriptionsSection = "feeds"
     root.settingsOpen = true
+  }
+
+  function selectSettingsTab(tab) {
+    root.clearInputFocus()
+    root.settingsTab = tab
   }
 
   function showContext(kind, target, item, x, y) {
@@ -670,6 +716,8 @@ BarWidget {
     else if (action === "deleteFeed") root.pendingDeleteFeedId = target.id
     else if (action === "deleteFolder") {
       root.closeArticle()
+      root.settingsTab = "subscriptions"
+      root.subscriptionsSection = "folders"
       root.settingsOpen = true
       root.pendingDeleteFolder = target
       Qt.callLater(function() {
@@ -824,6 +872,8 @@ BarWidget {
 
   function acceptPickedFile(code, output, error) {
     root.pickerBusy = false
+    root.settingsTab = "subscriptions"
+    root.subscriptionsSection = "transfer"
     root.settingsOpen = true
     root.open()
     if (code === 1) return
@@ -842,12 +892,13 @@ BarWidget {
   }
 
   function transferSubscriptions(importing, path) {
-    if (root.transferBusy || root.busy) return
+    if (root.transferBusy || root.busy || subscriptionProcess.running) return
     if (!path) {
       root.status = strings.t("status.pathRequired")
       return
     }
     root.transferBusy = true
+    root.transferTimedOut = false
     root.exportSnapshot = importing ? "" : JSON.stringify({feeds: root.feeds.map(function(feed) {
       return {title: feed.title, url: feed.url, folder: feed.folder}
     })}) + "\n"
@@ -855,6 +906,43 @@ BarWidget {
       ? ["python3", root.helperPath, "import-opml", path]
       : ["python3", root.helperPath, "export-opml", "-", path]
     subscriptionProcess.running = true
+    subscriptionDeadline.restart()
+  }
+
+  function expireSubscriptionTransfer() {
+    if (!root.transferBusy) return
+    if (!subscriptionProcess.running) {
+      root.finishSubscriptionProcess(-1, "")
+      return
+    }
+    root.transferTimedOut = true
+    root.status = strings.t("status.transferTimeout")
+    console.warn("MyRSS: OPML transfer timed out")
+    subscriptionKillTimer.restart()
+    subscriptionProcess.signal(15)
+  }
+
+  function forceKillSubscriptionTransfer() {
+    if (root.transferTimedOut && subscriptionProcess.running) subscriptionProcess.signal(9)
+  }
+
+  function checkSubscriptionStopped() {
+    if (root.transferBusy && !subscriptionProcess.running)
+      root.finishSubscriptionProcess(-1, "")
+  }
+
+  function finishSubscriptionProcess(code, output) {
+    if (!root.transferBusy) return
+    subscriptionDeadline.stop()
+    subscriptionKillTimer.stop()
+    root.exportSnapshot = ""
+    if (root.transferTimedOut) {
+      root.transferTimedOut = false
+      root.transferBusy = false
+      root.status = strings.t("status.transferTimeout")
+      return
+    }
+    root.acceptSubscriptionResult(code, output)
   }
 
   function acceptSubscriptionResult(code, output) {
@@ -1083,7 +1171,20 @@ BarWidget {
     stdinEnabled: true
     onStarted: if (root.exportSnapshot) write(root.exportSnapshot)
     stdout: StdioCollector { id: subscriptionOutput }
-    onExited: function(code) { root.acceptSubscriptionResult(code, subscriptionOutput.text) }
+    onExited: function(code) { root.finishSubscriptionProcess(code, subscriptionOutput.text) }
+    onRunningChanged: if (!running && root.transferBusy) Qt.callLater(root.checkSubscriptionStopped)
+  }
+
+  Timer {
+    id: subscriptionDeadline
+    interval: 30000
+    onTriggered: root.expireSubscriptionTransfer()
+  }
+
+  Timer {
+    id: subscriptionKillTimer
+    interval: 1000
+    onTriggered: root.forceKillSubscriptionTransfer()
   }
 
   Process {
@@ -1255,7 +1356,7 @@ BarWidget {
           searchInput.selectAll()
           return
         }
-        if (text === "?") { root.settingsOpen = true; root.closeArticle(); return }
+        if (text === "?") { root.selectSettingsTab("help"); root.settingsOpen = true; root.closeArticle(); return }
         if (root.settingsOpen) return
         var item = root.articleOpen ? root.findItem(root.selectedId) : root.visibleItems[Math.max(0, root.cursorIndex)]
         if (text === "r") root.refreshView()
@@ -1535,6 +1636,7 @@ BarWidget {
           enabled: !root.articleOpen
           spacing: Style.space(8)
           Row {
+            visible: !root.settingsOpen
             width: parent.width
             spacing: Style.space(6)
             ReaderText {
@@ -1553,7 +1655,8 @@ BarWidget {
               onClicked: root.markAll(false)
             }
           }
-          Row {
+          Flow {
+            visible: !root.settingsOpen
             width: parent.width
             spacing: Style.space(6)
             ActionButton {
@@ -1567,8 +1670,14 @@ BarWidget {
                 root.refreshView()
               }
             }
+            ActionButton {
+              label: Reader.unread(root.allItems(), root.readIds) > 0 ? strings.t("settings.markGlobalRead") : strings.t("settings.markGlobalUnread")
+              enabled: root.allItems().length > 0
+              onClicked: root.markAll(true)
+            }
           }
           Rectangle {
+            visible: !root.settingsOpen
             width: parent.width
             height: Style.space(32)
             radius: Style.cornerRadius
@@ -1853,7 +1962,7 @@ BarWidget {
         if (!restoring && !root.restoringView && root.stateLoaded && root.opened
             && !root.articleOpen && (userScrolling || storyList.moving)) {
           var passed = Reader.scrolledPastItems(root.visibleItems, previousY, currentY,
-              storyList.originY, Style.space(100), storyList.spacing)
+              storyList.originY, root.storyRowHeight, storyList.spacing)
           pendingReadIds = Array.from(new Set(pendingReadIds.concat(
               passed.map(function(item) { return item.id }))))
           if (pendingReadIds.length) scrollReadTimer.restart()
@@ -1867,11 +1976,11 @@ BarWidget {
         }
         if (storyList.moving) { scrollReadTimer.restart(); return }
         var items = root.visibleItems
-        var stride = Style.space(100) + storyList.spacing
+        var stride = root.storyRowHeight + storyList.spacing
         var top = storyList.contentY - storyList.originY
         var passed = items.filter(function(item, index) {
           return pendingReadIds.indexOf(item.id) >= 0
-              && index * stride + Style.space(100) <= top
+              && index * stride + root.storyRowHeight <= top
               && root.readIds.indexOf(item.id) < 0
         })
         pendingReadIds = []
@@ -1932,7 +2041,7 @@ BarWidget {
         delegate: Rectangle {
           required property var modelData
           width: ListView.view.width
-          height: Style.space(100)
+          height: root.storyRowHeight
           radius: Style.cornerRadius
           color: root.cursorId === modelData.id ? Style.hoverFill : "transparent"
           border.width: root.readIds.indexOf(modelData.id) >= 0 ? 0 : 2
@@ -1945,8 +2054,8 @@ BarWidget {
               id: storyThumbnail
               width: Style.space(76)
               height: Style.space(76)
-              visible: root.showImages && ready
-              imageUrl: root.showImages ? modelData.image : ""
+              visible: !root.compactView && root.showImages && ready
+              imageUrl: !root.compactView && root.showImages ? modelData.image : ""
               helperPath: root.helperPath
             }
             Column {
@@ -1956,8 +2065,8 @@ BarWidget {
                 text: modelData.title
                 color: root.popupText
                 font.bold: root.readIds.indexOf(modelData.id) < 0
-                wrapMode: Text.Wrap
-                maximumLineCount: 3
+                wrapMode: root.compactView ? Text.NoWrap : Text.Wrap
+                maximumLineCount: root.compactView ? 1 : 3
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
               }
@@ -1969,6 +2078,7 @@ BarWidget {
                 textFormat: Text.PlainText
               }
               ReaderText {
+                visible: !root.compactView
                 width: parent.width
                 text: modelData.summary
                 color: root.muted
@@ -2003,272 +2113,415 @@ BarWidget {
 
   Component {
     id: settingsPage
-    Flickable {
-      id: settingsScroll
+    Item {
+      id: settingsView
       function focusFeedEditor() {
-        feedNameInput.editor.forceActiveFocus()
-        contentY = feedEditColumn.y
+        root.selectSettingsTab("subscriptions")
+        root.subscriptionsSection = "feeds"
+        Qt.callLater(function() {
+          feedNameInput.editor.forceActiveFocus()
+          settingsScroll.contentY = feedEditColumn.mapToItem(settingsContent, 0, 0).y
+        })
       }
-      function revealFolderDelete() { contentY = folderManagement.y }
-      clip: true
-      contentWidth: width
-      contentHeight: settingsContent.implicitHeight
-      boundsBehavior: Flickable.StopAtBounds
+      function revealFolderDelete() {
+        root.selectSettingsTab("subscriptions")
+        root.subscriptionsSection = "folders"
+        Qt.callLater(function() { settingsScroll.contentY = 0 })
+      }
       Column {
-        id: settingsContent
+        id: settingsHeader
         width: parent.width
-        spacing: Style.space(10)
-        ActionButton { label: strings.t("settings.back"); onClicked: root.settingsOpen = false }
-        ReaderText {
-          text: strings.t("settings.title")
-          color: root.popupText
-          font.bold: true
-          font.pixelSize: Style.font.title
-        }
-        ActionButton {
-          label: strings.t("settings.feedback")
-          onClicked: root.openFeedback()
-        }
-        ReaderText {
-          width: parent.width
-          text: strings.t("settings.feedbackPrivacy")
-          color: root.muted
-          wrapMode: Text.Wrap
-        }
-        ReaderText { text: strings.t("settings.readerWidth"); color: root.popupText }
-        Flow {
-          width: parent.width
-          ActionButton { label: strings.t("settings.narrower"); enabled: root.readerWidth > 680; onClicked: root.changeReaderWidth(-80) }
-          ActionButton { label: strings.t("settings.wider"); enabled: root.readerWidth < 1320; onClicked: root.changeReaderWidth(80) }
-          ActionButton { label: strings.t("settings.resetWidth"); onClicked: { root.readerWidth = 860; root.saveState() } }
-        }
-        ReaderText {
-          width: parent.width
-          text: strings.t("settings.refresh")
-          color: root.popupText
-          wrapMode: Text.Wrap
-        }
-        Flow {
-          width: parent.width
-          Repeater {
-            model: [0, 15, 30, 60]
-            ActionButton {
-              required property int modelData
-              label: modelData === 0 ? strings.t("settings.off") : strings.t("settings.minutes").arg(Commons.I18n.formatNumber(modelData))
-              selected: root.refreshMinutes === modelData
-              onClicked: { root.refreshMinutes = modelData; root.saveState() }
-            }
-          }
-        }
-        ReaderText {
-          width: parent.width
-          text: strings.t("settings.refreshDisclosure")
-          color: root.muted
-          wrapMode: Text.Wrap
-        }
-        ActionButton {
-          width: parent.width
-          label: root.notificationsEnabled ? strings.t("settings.notificationsOn") : strings.t("settings.notificationsOff")
-          selected: root.notificationsEnabled
-          onClicked: { root.notificationsEnabled = !root.notificationsEnabled; root.saveState() }
-        }
-        ReaderText {
-          width: parent.width
-          text: strings.t("settings.markDelay")
-          color: root.popupText
-          wrapMode: Text.Wrap
-        }
-        Flow {
-          width: parent.width
-          Repeater {
-            model: [0, 2, 5, 10]
-            ActionButton {
-              required property int modelData
-              label: modelData === 0 ? strings.t("settings.off") : strings.t("settings.seconds").arg(Commons.I18n.formatNumber(modelData))
-              selected: root.markDelay === modelData
-              onClicked: { readTimer.stop(); root.markDelay = modelData; root.saveState() }
-            }
-          }
-        }
+        spacing: Style.space(8)
         Row {
-          spacing: Style.space(6)
+          width: parent.width
           ReaderText {
+            width: parent.width - settingsBack.width
             anchors.verticalCenter: parent.verticalCenter
-            text: strings.t("settings.textSize").arg(Commons.I18n.formatNumber(Math.round(root.textScale * 100)))
+            text: strings.t("settings.title")
             color: root.popupText
+            font.bold: true
+            font.pixelSize: Style.font.title
           }
-          ActionButton { label: "A−"; enabled: root.textScale > 0.9; onClicked: root.changeTextScale(-1) }
-          ActionButton { label: "A+"; enabled: root.textScale < 1.5; onClicked: root.changeTextScale(1) }
-        }
-        ActionButton {
-          width: parent.width
-          label: root.showImages ? strings.t("settings.imagesOn") : strings.t("settings.imagesOff")
-          selected: root.showImages
-          onClicked: { root.showImages = !root.showImages; root.saveState() }
-        }
-        ReaderText {
-          width: parent.width
-          text: strings.t("settings.appearance")
-          color: root.muted
-          wrapMode: Text.Wrap
-        }
-        ActionButton {
-          width: parent.width
-          label: Reader.unread(root.allItems(), root.readIds) > 0 ? strings.t("settings.markGlobalRead") : strings.t("settings.markGlobalUnread")
-          enabled: root.allItems().length > 0
-          onClicked: root.markAll(true)
-        }
-        Rectangle { width: parent.width; height: 1; color: Color.popups.border }
-        ReaderText { id: folderManagement; text: strings.t("settings.folders"); color: root.popupText; font.bold: true }
-        InputField {
-          id: settingsFolderInput
-          width: parent.width
-          placeholder: strings.t("settings.newFolder")
-          text: root.draftFolder
-          onTextChanged: root.draftFolder = text
-          onAccepted: root.createFolder()
+          ActionButton {
+            id: settingsBack
+            label: strings.t("settings.back")
+            onClicked: root.settingsOpen = false
+          }
         }
         Row {
-          ActionButton { label: root.renamingFolder ? strings.t("settings.apply") : strings.t("settings.createFolder"); onClicked: root.createFolder() }
-          ActionButton {
-            visible: root.renamingFolder !== ""
-            label: strings.t("feeds.cancelDelete")
-            onClicked: { root.renamingFolder = ""; root.draftFolder = "" }
-          }
-        }
-        Repeater {
-          model: root.folderNames
-          Column {
-            required property string modelData
-            width: settingsContent.width
-            ReaderText { width: parent.width; text: modelData; color: root.popupText; elide: Text.ElideRight }
+          width: parent.width
+          Repeater {
+            model: ["reading", "updates", "subscriptions", "help"]
             ActionButton {
-              label: strings.t("menu.renameFolder")
-              onClicked: {
-                root.renamingFolder = modelData
-                root.draftFolder = modelData
-                settingsFolderInput.editor.forceActiveFocus()
+              required property string modelData
+              width: settingsHeader.width * (modelData === "subscriptions" ? 0.34 : 0.22)
+              label: strings.t("settings.tab." + modelData)
+              selected: root.settingsTab === modelData
+              onClicked: root.selectSettingsTab(modelData)
+              Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 2
+                visible: root.settingsTab === modelData
+                color: Color.accent
               }
             }
+          }
+        }
+        Rectangle { width: parent.width; height: 1; color: Color.popups.border }
+      }
+      Flickable {
+        id: settingsScroll
+        anchors.top: settingsHeader.bottom
+        anchors.topMargin: Style.space(12)
+        anchors.bottom: parent.bottom
+        width: parent.width
+        clip: true
+        contentWidth: width
+        contentHeight: settingsContent.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+        Connections {
+          target: root
+          function onSettingsTabChanged() { settingsScroll.contentY = 0 }
+          function onSubscriptionsSectionChanged() { settingsScroll.contentY = 0 }
+        }
+        Column {
+          id: settingsContent
+          width: parent.width
+          spacing: Style.space(12)
+          Column {
+            width: parent.width
+            visible: root.settingsTab === "reading"
+            spacing: Style.space(14)
+            SettingRow {
+              width: parent.width
+              label: strings.t("settings.textSize").arg(Commons.I18n.formatNumber(Math.round(root.textScale * 100)))
+              ActionButton { label: "A−"; enabled: root.textScale > 0.9; onClicked: root.changeTextScale(-1) }
+              ActionButton { label: "A+"; enabled: root.textScale < 1.5; onClicked: root.changeTextScale(1) }
+            }
+            SettingRow {
+              width: parent.width
+              label: strings.t("settings.compactView")
+              ActionButton {
+                label: strings.t(root.compactView ? "settings.on" : "settings.off")
+                selected: root.compactView
+                onClicked: { root.compactView = !root.compactView; root.saveState() }
+              }
+            }
+            ReaderText {
+              width: parent.width
+              text: strings.t("settings.compactViewHelp")
+              color: root.muted
+              wrapMode: Text.Wrap
+            }
+            SettingRow {
+              width: parent.width
+              label: strings.t("settings.images")
+              ActionButton {
+                label: strings.t(root.showImages ? "settings.on" : "settings.off")
+                selected: root.showImages
+                onClicked: { root.showImages = !root.showImages; root.saveState() }
+              }
+            }
+            SettingRow {
+              width: parent.width
+              label: strings.t("settings.markDelay")
+              Repeater {
+                model: [0, 2, 5, 10]
+                ActionButton {
+                  required property int modelData
+                  label: modelData === 0 ? strings.t("settings.off") : strings.t("settings.seconds").arg(Commons.I18n.formatNumber(modelData))
+                  selected: root.markDelay === modelData
+                  onClicked: { readTimer.stop(); root.markDelay = modelData; root.saveState() }
+                }
+              }
+            }
+            ReaderText {
+              width: parent.width
+              text: strings.t("settings.scrollRead")
+              color: root.muted
+              wrapMode: Text.Wrap
+            }
+            Rectangle { width: parent.width; height: 1; color: Color.popups.border }
+            SettingRow {
+              width: parent.width
+              label: strings.t("settings.readerWidth")
+              ActionButton { label: strings.t("settings.narrower"); enabled: root.readerWidth > 680; onClicked: root.changeReaderWidth(-80) }
+              ActionButton { label: strings.t("settings.wider"); enabled: root.readerWidth < 1320; onClicked: root.changeReaderWidth(80) }
+              ActionButton { label: strings.t("settings.resetWidth"); onClicked: { root.readerWidth = 860; root.saveState() } }
+            }
+            ReaderText {
+              width: parent.width
+              text: strings.t("settings.appearance")
+              color: root.muted
+              wrapMode: Text.Wrap
+            }
+          }
+          Column {
+            width: parent.width
+            visible: root.settingsTab === "updates"
+            spacing: Style.space(14)
+            SettingRow {
+              width: parent.width
+              label: strings.t("settings.refresh")
+              Repeater {
+                model: [0, 15, 30, 60]
+                ActionButton {
+                  required property int modelData
+                  label: modelData === 0 ? strings.t("settings.off") : strings.t("settings.minutes").arg(Commons.I18n.formatNumber(modelData))
+                  selected: root.refreshMinutes === modelData
+                  onClicked: { root.refreshMinutes = modelData; root.saveState() }
+                }
+              }
+            }
+            ReaderText {
+              width: parent.width
+              text: strings.t("settings.refreshDisclosure")
+              color: root.muted
+              wrapMode: Text.Wrap
+            }
+            SettingRow {
+              width: parent.width
+              label: strings.t("settings.notifications")
+              ActionButton {
+                label: strings.t(root.notificationsEnabled ? "settings.on" : "settings.off")
+                selected: root.notificationsEnabled
+                onClicked: { root.notificationsEnabled = !root.notificationsEnabled; root.saveState() }
+              }
+            }
+          }
+          Column {
+            width: parent.width
+            visible: root.settingsTab === "subscriptions"
+            spacing: Style.space(10)
             ActionButton {
-              visible: root.pendingDeleteFolder !== modelData
-              label: strings.t("settings.deleteFolder")
-              onClicked: root.pendingDeleteFolder = modelData
+              width: parent.width
+              alignLeft: true
+              label: strings.t("settings.feeds")
+              counter: root.subscriptionsSection === "feeds" ? "−" : "+"
+              selected: root.subscriptionsSection === "feeds"
+              onClicked: { root.clearInputFocus(); root.subscriptionsSection = root.subscriptionsSection === "feeds" ? "" : "feeds" }
             }
             Column {
               width: parent.width
-              visible: root.pendingDeleteFolder === modelData
-              ReaderText {
+              visible: root.subscriptionsSection === "feeds"
+              spacing: Style.space(10)
+              Column {
+                id: feedEditColumn
                 width: parent.width
-                text: strings.t("settings.confirmDeleteFolder").arg(modelData)
-                color: root.popupText
-                wrapMode: Text.Wrap
+                visible: root.editingFeedId !== ""
+                spacing: Style.space(6)
+                ReaderText { text: strings.t("settings.feedName"); color: root.popupText }
+                InputField {
+                  id: feedNameInput
+                  width: parent.width
+                  text: root.editingTitle
+                  onTextChanged: root.editingTitle = text
+                  onAccepted: root.applyFeedEdit()
+                }
+                ReaderText { text: strings.t("settings.folder"); color: root.popupText }
+                InputField {
+                  width: parent.width
+                  placeholder: strings.t("settings.noFolder")
+                  text: root.editingFolder
+                  onTextChanged: root.editingFolder = text
+                  onAccepted: root.applyFeedEdit()
+                }
+                Flow {
+                  width: parent.width
+                  ActionButton {
+                    label: strings.t("settings.ungrouped")
+                    selected: root.editingFolder === ""
+                    onClicked: root.editingFolder = ""
+                  }
+                  Repeater {
+                    model: root.folderNames
+                    ActionButton {
+                      required property string modelData
+                      label: modelData
+                      selected: root.editingFolder === modelData
+                      onClicked: root.editingFolder = modelData
+                    }
+                  }
+                }
+                Row {
+                  ActionButton { label: strings.t("settings.apply"); onClicked: root.applyFeedEdit() }
+                  ActionButton { label: strings.t("feeds.cancelDelete"); onClicked: root.editingFeedId = "" }
+                }
+              }
+              Repeater {
+                model: root.feeds
+                Column {
+                  required property var modelData
+                  width: parent.width
+                  spacing: Style.space(2)
+                  Row {
+                    width: parent.width
+                    ReaderText {
+                      width: parent.width - feedActions.width
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: modelData.folder ? strings.t("settings.feedInFolder").arg(modelData.title).arg(modelData.folder) : modelData.title
+                      color: root.popupText
+                      elide: Text.ElideRight
+                    }
+                    Row {
+                      id: feedActions
+                      ActionButton { label: strings.t("settings.edit"); onClicked: { root.editFeed(modelData); settingsView.focusFeedEditor() } }
+                      ActionButton { label: "↑"; onClicked: root.moveFeed(modelData.id, -1) }
+                      ActionButton { label: "↓"; onClicked: root.moveFeed(modelData.id, 1) }
+                    }
+                  }
+                  Flow {
+                    width: parent.width
+                    spacing: Style.space(6)
+                    ReaderText {
+                      width: Math.min(implicitWidth, parent.width)
+                      text: modelData.error || (modelData.lastUpdated
+                      ? strings.t("status.lastUpdated").arg(new Date(modelData.lastUpdated).toLocaleString(Qt.locale(Commons.I18n.formatLocale)))
+                      : strings.t("status.neverUpdated"))
+                      color: modelData.error ? Color.accent : root.muted
+                      wrapMode: Text.Wrap
+                    }
+                    ActionButton { label: modelData.error ? strings.t("list.retry") : strings.t("list.refresh"); enabled: !root.busy; onClicked: root.refreshFeed(modelData) }
+                  }
+                }
+              }
+            }
+            Rectangle { width: parent.width; height: 1; color: Color.popups.border }
+            ActionButton {
+              id: folderManagement
+              width: parent.width
+              alignLeft: true
+              label: strings.t("settings.folders")
+              counter: root.subscriptionsSection === "folders" ? "−" : "+"
+              selected: root.subscriptionsSection === "folders"
+              onClicked: { root.clearInputFocus(); root.subscriptionsSection = root.subscriptionsSection === "folders" ? "" : "folders" }
+            }
+            Column {
+              width: parent.width
+              visible: root.subscriptionsSection === "folders"
+              spacing: Style.space(8)
+              InputField {
+                id: settingsFolderInput
+                width: parent.width
+                placeholder: strings.t("settings.newFolder")
+                text: root.draftFolder
+                onTextChanged: root.draftFolder = text
+                onAccepted: root.createFolder()
               }
               Row {
-                ActionButton { label: strings.t("feeds.cancelDelete"); onClicked: root.pendingDeleteFolder = "" }
-                ActionButton { label: strings.t("feeds.delete"); onClicked: root.deleteFolder(modelData) }
+                ActionButton { label: root.renamingFolder ? strings.t("settings.apply") : strings.t("settings.createFolder"); onClicked: root.createFolder() }
+                ActionButton {
+                  visible: root.renamingFolder !== ""
+                  label: strings.t("feeds.cancelDelete")
+                  onClicked: { root.renamingFolder = ""; root.draftFolder = "" }
+                }
+              }
+              Repeater {
+                model: root.folderNames
+                Column {
+                  required property string modelData
+                  width: settingsContent.width
+                  Row {
+                    width: parent.width
+                    ReaderText {
+                      width: parent.width - folderActions.width
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: modelData
+                      color: root.popupText
+                      elide: Text.ElideRight
+                    }
+                    Row {
+                      id: folderActions
+                      ActionButton {
+                        label: strings.t("menu.renameFolder")
+                        onClicked: {
+                          root.renamingFolder = modelData
+                          root.draftFolder = modelData
+                          settingsFolderInput.editor.forceActiveFocus()
+                          root.revealControl(settingsFolderInput)
+                        }
+                      }
+                      ActionButton {
+                        visible: root.pendingDeleteFolder !== modelData
+                        label: strings.t("settings.deleteFolder")
+                        onClicked: root.pendingDeleteFolder = modelData
+                      }
+                    }
+                  }
+                  Column {
+                    width: parent.width
+                    visible: root.pendingDeleteFolder === modelData
+                    ReaderText {
+                      width: parent.width
+                      text: strings.t("settings.confirmDeleteFolder").arg(modelData)
+                      color: root.popupText
+                      wrapMode: Text.Wrap
+                    }
+                    Row {
+                      ActionButton { label: strings.t("feeds.cancelDelete"); onClicked: root.pendingDeleteFolder = "" }
+                      ActionButton { label: strings.t("feeds.delete"); onClicked: root.deleteFolder(modelData) }
+                    }
+                  }
+                }
               }
             }
-          }
-        }
-        Rectangle { width: parent.width; height: 1; color: Color.popups.border }
-        ReaderText {
-          text: strings.t("settings.feeds")
-          color: root.popupText
-          font.bold: true
-        }
-        Column {
-          id: feedEditColumn
-          width: parent.width
-          visible: root.editingFeedId !== ""
-          spacing: Style.space(6)
-          ReaderText { text: strings.t("settings.feedName"); color: root.popupText }
-          InputField {
-            id: feedNameInput
-            width: parent.width
-            text: root.editingTitle
-            onTextChanged: root.editingTitle = text
-            onAccepted: root.applyFeedEdit()
-          }
-          ReaderText { text: strings.t("settings.folder"); color: root.popupText }
-          InputField {
-            width: parent.width
-            placeholder: strings.t("settings.noFolder")
-            text: root.editingFolder
-            onTextChanged: root.editingFolder = text
-            onAccepted: root.applyFeedEdit()
-          }
-          Flow {
-            width: parent.width
+            Rectangle { width: parent.width; height: 1; color: Color.popups.border }
             ActionButton {
-              label: strings.t("settings.ungrouped")
-              selected: root.editingFolder === ""
-              onClicked: root.editingFolder = ""
+              width: parent.width
+              alignLeft: true
+              label: strings.t("settings.opml")
+              counter: root.subscriptionsSection === "transfer" ? "−" : "+"
+              selected: root.subscriptionsSection === "transfer"
+              onClicked: { root.clearInputFocus(); root.subscriptionsSection = root.subscriptionsSection === "transfer" ? "" : "transfer" }
             }
-            Repeater {
-              model: root.folderNames
-              ActionButton {
-                required property string modelData
-                label: modelData
-                selected: root.editingFolder === modelData
-                onClicked: root.editingFolder = modelData
+            Column {
+              width: parent.width
+              visible: root.subscriptionsSection === "transfer"
+              spacing: Style.space(8)
+              ReaderText {
+                width: parent.width
+                text: strings.t("settings.opmlHelp")
+                color: root.muted
+                wrapMode: Text.Wrap
+              }
+              Flow {
+                width: parent.width
+                ActionButton { label: strings.t("settings.import"); enabled: !root.transferBusy && !root.busy && !root.pickerBusy; onClicked: root.pickSubscriptions(true) }
+                ActionButton { label: strings.t("settings.export"); enabled: !root.transferBusy && !root.busy && !root.pickerBusy; onClicked: root.pickSubscriptions(false) }
               }
             }
           }
-          Row {
-            ActionButton { label: strings.t("settings.apply"); onClicked: root.applyFeedEdit() }
-            ActionButton { label: strings.t("feeds.cancelDelete"); onClicked: root.editingFeedId = "" }
-          }
-        }
-        Repeater {
-          model: root.feeds
           Column {
-            required property var modelData
-            width: settingsContent.width
-            spacing: Style.space(2)
+            width: parent.width
+            visible: root.settingsTab === "help"
+            spacing: Style.space(12)
             ReaderText {
               width: parent.width
-              text: modelData.folder ? strings.t("settings.feedInFolder").arg(modelData.title).arg(modelData.folder) : modelData.title
-              color: root.popupText
+              text: pluginManifest.version ? strings.t("settings.version").arg(pluginManifest.version)
+                : strings.t("settings.versionUnavailable")
+              color: root.muted
               wrapMode: Text.Wrap
+            }
+            ActionButton {
+              label: strings.t("settings.feedback")
+              onClicked: root.openFeedback()
             }
             ReaderText {
               width: parent.width
-              text: modelData.error || (modelData.lastUpdated
-                ? strings.t("status.lastUpdated").arg(new Date(modelData.lastUpdated).toLocaleString(Qt.locale(Commons.I18n.formatLocale)))
-                : strings.t("status.neverUpdated"))
-              color: modelData.error ? Color.accent : root.muted
+              text: strings.t("settings.feedbackPrivacy")
+              color: root.muted
               wrapMode: Text.Wrap
             }
-            Flow {
+            Rectangle { width: parent.width; height: 1; color: Color.popups.border }
+            ReaderText { text: strings.t("settings.keyboard"); color: root.popupText; font.bold: true }
+            ReaderText {
               width: parent.width
-              ActionButton { label: strings.t("settings.edit"); onClicked: { root.editFeed(modelData); Qt.callLater(settingsScroll.focusFeedEditor) } }
-              ActionButton { label: "↑"; onClicked: root.moveFeed(modelData.id, -1) }
-              ActionButton { label: "↓"; onClicked: root.moveFeed(modelData.id, 1) }
-              ActionButton { label: modelData.error ? strings.t("list.retry") : strings.t("list.refresh"); enabled: !root.busy; onClicked: root.refreshFeed(modelData) }
+              text: strings.t("settings.shortcuts")
+              color: root.muted
+              wrapMode: Text.Wrap
             }
           }
-        }
-        Rectangle { width: parent.width; height: 1; color: Color.popups.border }
-        ReaderText { text: strings.t("settings.opml"); color: root.popupText; font.bold: true }
-        ReaderText {
-          width: parent.width
-          text: strings.t("settings.opmlHelp")
-          color: root.muted
-          wrapMode: Text.Wrap
-        }
-        Flow {
-          width: parent.width
-          ActionButton { label: strings.t("settings.import"); enabled: !root.transferBusy && !root.busy && !root.pickerBusy; onClicked: root.pickSubscriptions(true) }
-          ActionButton { label: strings.t("settings.export"); enabled: !root.transferBusy && !root.busy && !root.pickerBusy; onClicked: root.pickSubscriptions(false) }
-        }
-        Rectangle { width: parent.width; height: 1; color: Color.popups.border }
-        ReaderText { text: strings.t("settings.keyboard"); color: root.popupText; font.bold: true }
-        ReaderText {
-          width: parent.width
-          text: strings.t("settings.shortcuts")
-          color: root.muted
-          wrapMode: Text.Wrap
         }
       }
     }

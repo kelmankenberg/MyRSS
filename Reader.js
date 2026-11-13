@@ -135,6 +135,7 @@ function normalizeState(state) {
             markDelay: [0, 2, 5, 10].indexOf(prefs.markDelay) >= 0 ? prefs.markDelay : 5,
             notifications: prefs.notifications === true,
             showImages: prefs.showImages !== false,
+            compactView: prefs.compactView === true,
             showRead: prefs.showRead !== false
         }
     };

@@ -139,6 +139,131 @@ class FeedTests(unittest.TestCase):
             self.assertEqual(sanitized_path.read_bytes(), png_image())
             self.assertEqual(list(sanitized_path.parent.glob(".thumbnail-*")), [])
 
+    def test_thumbnail_cache_evicts_least_recently_used_by_byte_budget(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CACHE_HOME": directory}), \
+                patch.object(feed, "MAX_CACHE_BYTES", 12), \
+                patch.object(feed, "MAX_CACHE_FILES", 10):
+            paths = [Path(feed.cache_thumbnail(bytes([i]) * 4, ".jpg")) for i in range(3)]
+            for i, path in enumerate(paths):
+                os.utime(path, ns=(i + 1, i + 1))
+            self.assertEqual(Path(feed.cache_thumbnail(b"\x00" * 4, ".jpg")), paths[0])
+            self.assertTrue(all(path.exists() for path in paths))
+            newest = Path(feed.cache_thumbnail(b"\x03" * 4, ".jpg"))
+            self.assertTrue(paths[0].exists())
+            self.assertFalse(paths[1].exists())
+            self.assertTrue(paths[2].exists())
+            self.assertTrue(newest.exists())
+            self.assertEqual(sum(path.stat().st_size for path in newest.parent.glob("*.jpg")), 12)
+
+    def test_thumbnail_cache_caps_file_count_with_unused_byte_budget(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CACHE_HOME": directory}), \
+                patch.object(feed, "MAX_CACHE_BYTES", 1024), \
+                patch.object(feed, "MAX_CACHE_FILES", 2):
+            first = Path(feed.cache_thumbnail(b"a", ".jpg"))
+            os.utime(first, ns=(1, 1))
+            second = Path(feed.cache_thumbnail(b"b", ".jpg"))
+            third = Path(feed.cache_thumbnail(b"c", ".jpg"))
+            self.assertFalse(first.exists())
+            self.assertTrue(second.exists())
+            self.assertTrue(third.exists())
+            self.assertEqual(len(list(first.parent.glob("*.jpg"))), 2)
+
+    def test_thumbnail_cache_caps_files_and_reserves_temporary_write_space(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CACHE_HOME": directory}), \
+                patch.object(feed, "MAX_CACHE_BYTES", 8), \
+                patch.object(feed, "MAX_CACHE_FILES", 2):
+            first = Path(feed.cache_thumbnail(b"aaaa", ".jpg"))
+            os.utime(first, ns=(1, 1))
+            second = Path(feed.cache_thumbnail(b"bb", ".jpg"))
+            abandoned = first.parent / (".thumbnail-" + "0" * 32)
+            abandoned.write_bytes(b"interrupted")
+            old_abandoned = first.parent / ".thumbnail-abcdefgh"
+            old_abandoned.write_bytes(b"old interrupted write")
+            unrelated = first.parent / "notes.txt"
+            unrelated.write_text("untouched")
+            replace = os.replace
+
+            def bounded_replace(source, destination, **kwargs):
+                images = [path for path in first.parent.iterdir()
+                          if path.suffix == ".jpg" or path.name.startswith(".thumbnail-")]
+                self.assertLessEqual(len(images), 2)
+                self.assertLessEqual(sum(path.stat().st_size for path in images), 8)
+                self.assertEqual(stat.S_IMODE((first.parent / source).stat().st_mode), 0o600)
+                return replace(source, destination, **kwargs)
+
+            with patch.object(feed.os, "replace", side_effect=bounded_replace):
+                third = Path(feed.cache_thumbnail(b"cccccc", ".jpg"))
+            self.assertFalse(first.exists())
+            self.assertTrue(second.exists())
+            self.assertEqual(third.read_bytes(), b"cccccc")
+            self.assertFalse(abandoned.exists())
+            self.assertFalse(old_abandoned.exists())
+            self.assertEqual(unrelated.read_text(), "untouched")
+            with patch.object(feed.os, "replace", side_effect=OSError("test write failure")):
+                with self.assertRaises(OSError):
+                    feed.cache_thumbnail(b"failed", ".jpg")
+            self.assertEqual(list(first.parent.glob(".thumbnail-*")), [])
+
+    def test_thumbnail_cache_does_not_follow_symlink_entries_or_locks(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"XDG_CACHE_HOME": directory}):
+            cached = Path(feed.cache_thumbnail(b"image", ".jpg"))
+            outside = Path(directory) / "keep"
+            outside.write_bytes(b"keep")
+            cached.unlink()
+            cached.symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "Invalid thumbnail cache entry"):
+                feed.cache_thumbnail(b"other", ".jpg")
+            self.assertTrue(cached.is_symlink())
+            self.assertEqual(outside.read_bytes(), b"keep")
+            cached.unlink()
+            lock = cached.parent / ".cache.lock"
+            lock.unlink()
+            lock.symlink_to(outside)
+            with self.assertRaises(OSError):
+                feed.cache_thumbnail(b"other", ".jpg")
+            self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_thumbnail_cache_serializes_concurrent_writers(self):
+        script = """
+import sys, time
+import feed
+feed.MAX_CACHE_BYTES = 180
+feed.MAX_CACHE_FILES = 3
+replace = feed.os.replace
+def delayed_replace(*args, **kwargs):
+    time.sleep(.05)
+    return replace(*args, **kwargs)
+feed.os.replace = delayed_replace
+feed.cache_thumbnail(bytes([int(sys.argv[1])]) * 60, ".jpg")
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            environment = dict(os.environ, XDG_CACHE_HOME=directory, PYTHONDONTWRITEBYTECODE="1")
+            processes = []
+            try:
+                for i in range(8):
+                    processes.append(subprocess.Popen(
+                        [feed.sys.executable, "-c", script, str(i)],
+                        cwd=MODULE_PATH.parent, env=environment,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    ))
+                for process in processes:
+                    stdout, stderr = process.communicate(timeout=10)
+                    self.assertEqual(process.returncode, 0, (stdout, stderr))
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
+            cache = Path(directory) / "omarchy/news-reader/images-v2"
+            images = list(cache.glob("*.jpg"))
+            self.assertEqual(len(images), 3)
+            self.assertEqual(sum(path.stat().st_size for path in images), 180)
+            self.assertEqual(list(cache.glob(".thumbnail-*")), [])
+
     def test_https_redirects_close_unread_bodies_for_all_redirect_statuses(self):
         body = b"x" * (feed.MAX_RESPONSE + 1)
         frames = (
@@ -360,6 +485,34 @@ else:
         ):
             with self.subTest(xml=xml), self.assertRaises(ValueError):
                 feed.parse_opml(xml)
+
+    def test_opml_import_rejects_fifo_without_blocking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fifo = Path(directory) / "pipe.opml"
+            os.mkfifo(fifo)
+            link = Path(directory) / "linked-pipe.opml"
+            link.symlink_to(fifo)
+            for path in (fifo, link):
+                with self.subTest(path=path):
+                    result = subprocess.run(
+                        [feed.sys.executable, str(MODULE_PATH), "import-opml", str(path)],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), {
+                        "ok": False, "error": "Select a regular OPML file.",
+                    })
+
+    def test_opml_import_accepts_regular_files_and_keeps_size_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "feeds.opml"
+            path.write_bytes(b'<opml><body><outline text="Daily" xmlUrl="https://example.com/feed"/></body></opml>')
+            self.assertEqual(feed.import_opml(str(path))["feeds"][0]["title"], "Daily")
+            with self.assertRaisesRegex(ValueError, "regular OPML file"):
+                feed.import_opml(directory)
+            path.write_bytes(b"x" * (feed.MAX_RESPONSE + 1))
+            with self.assertRaisesRegex(ValueError, "2 MiB limit"):
+                feed.import_opml(str(path))
 
     def test_opml_export_round_trip_and_no_overwrite(self):
         subscriptions = [{"title": "Daily <News>", "url": "https://example.com/feed", "folder": "A & B"}]

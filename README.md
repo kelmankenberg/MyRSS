@@ -47,6 +47,10 @@ or Zenity.
   form chooser in your browser. Reports are public; do not include private feed
   URLs, access tokens, reading history, state files, or exported subscriptions.
   No reading data is automatically attached.
+- Settings is organized into **Reading**, **Updates**, **Subscriptions**, and
+  **Help** tabs. The header stays visible while content scrolls. Subscription
+  tools expand on demand; **?** opens Help directly.
+- **Settings → Help** shows the installed MyRSS version for bug reports.
 - **Saved** archives bookmarked stories independently of feed caches, including
   their readable text once fetched. Refreshing or deleting a feed does not
   delete saved stories. Saved stories can be read offline; uncached images
@@ -67,7 +71,7 @@ or Zenity.
   unbounded clipboard transfers. Typing, selection, and copying remain available.
 - **Mark view read/unread** applies to the selected feed, folder, Saved list,
   or global search results, including stories hidden by the read filter.
-  Settings has a separate **Mark ALL feeds read/unread** action.
+  The reading toolbar has a separate **Mark ALL feeds read/unread** action.
 - Settings provides optional 15/30/60-minute automatic refresh, per-feed
   update/error status and Retry, and optional new-unread-article notifications
   for scheduled refreshes. Both automatic refresh and notifications default
@@ -81,6 +85,10 @@ or Zenity.
   2/5/10 seconds or turn it off. Defaults are 100%, images on, and five seconds.
   Article extraction prefers semantic article/main content and omits common
   page chrome; unusual or JavaScript-only pages may need **Open original**.
+- Enable **Compact view** in **Settings → Reading** for shorter story rows
+  showing only a one-line title and source/date metadata, with no thumbnails
+  or previews. The setting persists and defaults to Off. Opened articles still
+  follow the separate image preference.
 - Manage feeds in Settings: rename, assign a folder (empty means ungrouped),
   and reorder with the arrows within each folder. Click a folder name to read
   it; use its **+ / −** control to expand or collapse its subscriptions.
@@ -109,6 +117,11 @@ or Zenity.
   HTTPS; an invalid/private URL rejects the import without partial changes.
   Export creates a new file with owner-only permissions (`0600`) before writing
   any subscription URLs and refuses to overwrite an existing one.
+  Import accepts regular files only, not named pipes or devices. Imports and
+  exports have a 30-second deadline; stalled helpers receive termination,
+  followed by a forced kill after one second if needed. Controls recover after
+  the helper exits. An export interrupted by a timeout may leave an incomplete
+  file; choose a new filename when retrying.
 - Press **Escape** to close the article or Settings, then close the reader.
 - Move the widget with `omarchy bar move kel.news-reader --section left`,
   `--section center`, or `--section right`.
@@ -134,6 +147,12 @@ and color profiles) without decompressing it before the shell sees the image.
 Only image headers, palette/transparency, and pixel-data chunks are retained.
 Image signatures must match their MIME type. Sanitized images use a new cache
 namespace; legacy cached images are never reused.
+The current disk thumbnail cache is capped at **100 MiB and 2,000 files**.
+Least-recently-used images are evicted as new images arrive, with temporary-write
+space included in the limits and a shared lock protecting concurrent downloads.
+This only removes disposable thumbnails, not feeds, reading history, or saved
+article text. An evicted image can be downloaded again when its thumbnail is
+loaded; an image evicted before decoding may remain hidden until the view reloads.
 At most 100 subscriptions, 100 cached stories per feed, and 10,000 saved
 stories are supported. Existing saved IDs are migrated to article snapshots
 on first load; stories that had already vanished from the old cache cannot

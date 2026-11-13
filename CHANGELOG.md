@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.9 - 2026-11-12
+
+### Added
+
+- Add a persistent **Compact view** toggle in Settings → Reading. Compact
+  story lists show only a one-line title and source/date metadata, without
+  thumbnails or preview text. Opened articles retain their existing layout
+  and image preference.
+- Show the installed plugin version in Settings → Help beside the reporting
+  link, using the manifest as the single source of version information.
+
+### Changed
+
+- Organize Settings into horizontal Reading, Updates, Subscriptions, and Help
+  tabs with a fixed header, compact preference rows, and expandable
+  subscription-management sections.
+- Open the relevant subscription section from feed/folder context actions
+  and show Help directly with the `?` shortcut.
+- Move the global mark-all-read/unread action to the reading toolbar.
+- Keep scroll-to-read calculations aligned with the shorter compact rows.
+
+### Fixed
+
+- Reject named pipes and other non-regular OPML inputs before reading. Apply a
+  30-second import/export deadline, terminate stalled helpers, and restore the
+  transfer controls when the helper exits or fails to start.
+- Limit the current thumbnail cache to 100 MiB and 2,000 files, evicting
+  least-recently-used images. Serialize eviction and atomic writes across
+  helpers, reserve space for temporary writes, and clean interrupted writes.
+
 ## 0.1.8 - 2026-11-12
 
 ### Added
