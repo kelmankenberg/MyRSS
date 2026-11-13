@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.10 - 2026-11-13
+
+### Fixed
+
+- Prevent Qt's automatic clipboard receive (which has no byte ceiling) from
+  pulling a foreign Wayland clipboard offer while ReaderInput fields are
+  focused. Fields are now read-only unless actively focused, closing the
+  remaining availability vector reported by the marketplace review.
+
 ## 0.1.9 - 2026-11-12
 
 ### Added

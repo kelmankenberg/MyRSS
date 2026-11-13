@@ -133,6 +133,10 @@ BarWidget {
     selectByMouse: true
     color: root.popupText
     activeFocusOnTab: true
+    // Keep the field read-only unless it has focus. This prevents Qt's
+    // automatic clipboard receive (which has no byte ceiling) from pulling
+    // a foreign Wayland clipboard offer while the reader is open.
+    readOnly: !activeFocus
     onActiveFocusChanged: {
       root.settingsEditorFocused = activeFocus
       if (activeFocus) { root.focusedControl = this; root.revealControl(this) }
