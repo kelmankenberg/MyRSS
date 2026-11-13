@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.8 - 2026-11-12
+
+### Added
+
+- GitHub issue forms for bug reports and feature requests, with privacy
+  reminders and the option to submit a blank issue.
+- A **Report bug / request feature** button in Settings that opens the form
+  chooser in the browser without attaching reading data.
+- Prominent README links to both reporting forms.
+
 ## 0.1.7 - 2026-11-10
 
 ### Added

@@ -233,6 +233,13 @@ BarWidget {
     root.status = strings.t("status.pasteUnavailable")
   }
 
+  function openFeedback() {
+    if (!Qt.openUrlExternally("https://github.com/kelmankenberg/MyRSS/issues/new/choose")) {
+      root.status = strings.t("status.feedbackError")
+      console.warn("MyRSS: could not open GitHub feedback forms")
+    }
+  }
+
   function blockPaste(event) {
     if (!event.matches(StandardKey.Paste)) return false
     event.accepted = true
@@ -2017,6 +2024,16 @@ BarWidget {
           color: root.popupText
           font.bold: true
           font.pixelSize: Style.font.title
+        }
+        ActionButton {
+          label: strings.t("settings.feedback")
+          onClicked: root.openFeedback()
+        }
+        ReaderText {
+          width: parent.width
+          text: strings.t("settings.feedbackPrivacy")
+          color: root.muted
+          wrapMode: Text.Wrap
         }
         ReaderText { text: strings.t("settings.readerWidth"); color: root.popupText }
         Flow {

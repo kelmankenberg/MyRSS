@@ -458,6 +458,16 @@ assert.equal(root.articleTimedOut, false);
 assert.equal(root.articleError, "status.requestTimeout");
 assert.ok(timerCalls.articleDeadlineStop > 0);
 
+let feedbackUrl;
+context.Qt.openUrlExternally = url => { feedbackUrl = url; return true; };
+root.openFeedback();
+assert.equal(feedbackUrl, "https://github.com/kelmankenberg/MyRSS/issues/new/choose");
+context.Qt.openUrlExternally = () => false;
+const warningCount = warnings.length;
+root.openFeedback();
+assert.equal(root.status, "status.feedbackError");
+assert.equal(warnings.length, warningCount + 1);
+
 const scrollTasks = [];
 const scrollingRoot = {
     readIds: [], opened: true, stateLoaded: true, articleOpen: false,

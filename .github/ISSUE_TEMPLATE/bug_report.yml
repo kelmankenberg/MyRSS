@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a problem with MyRSS.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check existing issues before reporting a bug.
+        Issues are public. Do not include private feed URLs, access tokens,
+        reading history, state files, or exported subscription files.
+        Remove private information from screenshots and logs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the steps that cause the problem, if known.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: MyRSS and Omarchy versions
+      description: Include both versions if known; "unknown" is fine.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Optional screenshots or relevant logs, with private information removed.

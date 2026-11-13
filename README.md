@@ -7,6 +7,9 @@ import/export, and a slide-out reading view.
 
 **[Changelog](CHANGELOG.md)**
 
+**[Report a bug](https://github.com/kelmankenberg/MyRSS/issues/new?template=bug_report.yml)**
+| **[Request a feature](https://github.com/kelmankenberg/MyRSS/issues/new?template=feature_request.yml)**
+
 ![MyRSS showing subscriptions, unread counts, search, and stories with thumbnails](preview.png)
 
 ## Installation
@@ -40,6 +43,10 @@ or Zenity.
   feeds refresh when added or when you press **Refresh**.
   Pasted HTTP feed addresses are upgraded to HTTPS; insecure downloads are
   not supported.
+- Settings includes **Report bug / request feature**, which opens the GitHub
+  form chooser in your browser. Reports are public; do not include private feed
+  URLs, access tokens, reading history, state files, or exported subscriptions.
+  No reading data is automatically attached.
 - **Saved** archives bookmarked stories independently of feed caches, including
   their readable text once fetched. Refreshing or deleting a feed does not
   delete saved stories. Saved stories can be read offline; uncached images

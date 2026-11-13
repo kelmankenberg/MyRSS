@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest an improvement to MyRSS.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check existing issues before suggesting a feature.
+        Issues are public. Do not include private feed URLs, access tokens,
+        reading history, state files, or exported subscription files.
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Problem or use case
+      description: What would this feature help you do?
+    validations:
+      required: true
+  - type: textarea
+    id: improvement
+    attributes:
+      label: Proposed improvement
+      description: Describe how you would like MyRSS to work.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional workarounds or other approaches you considered.
